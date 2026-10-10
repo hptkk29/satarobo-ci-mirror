@@ -1,0 +1,133 @@
+:root {
+  color-scheme: light dark;
+  --nen: #f8fafc;
+  --mat: #ffffff;
+  --chu: #0f172a;
+  --phu: #475569;
+  --vien: #cbd5e1;
+  --nhan: #7c3aed;
+  --loi: #b91c1c;
+  --ok: #15803d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --nen: #0b1120;
+    --mat: #111827;
+    --chu: #e5e7eb;
+    --phu: #9ca3af;
+    --vien: #374151;
+    --nhan: #a78bfa;
+    --loi: #f87171;
+    --ok: #4ade80;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--nen);
+  color: var(--chu);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+h1 {
+  font-size: 22px;
+  margin: 0 0 4px;
+}
+h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+.phu,
+.goi-y {
+  color: var(--phu);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+section,
+form {
+  background: var(--mat);
+  border: 1px solid var(--vien);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 16px;
+}
+dl {
+  margin: 0 0 12px;
+  display: grid;
+  gap: 6px;
+}
+dl div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+dt {
+  color: var(--phu);
+  min-width: 170px;
+}
+dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+label {
+  display: block;
+  font-weight: 600;
+  margin: 12px 0 4px;
+}
+input,
+select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--vien);
+  border-radius: 8px;
+  background: var(--nen);
+  color: var(--chu);
+  font: inherit;
+}
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--nhan);
+  outline-offset: 2px;
+}
+button {
+  margin-top: 16px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--nhan);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.loi {
+  color: var(--loi);
+  font-size: 13px;
+  margin: 4px 0 0;
+  min-height: 0;
+}
+.loi:empty {
+  display: none;
+}
+#thong-bao {
+  margin: 12px 0 0;
+  font-weight: 600;
+}
+#thong-bao[data-kieu="ok"] {
+  color: var(--ok);
+}
+#thong-bao[data-kieu="loi"] {
+  color: var(--loi);
+}
