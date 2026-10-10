@@ -1,0 +1,12 @@
+-- GĐ4 POS — CHỐT HỢP ĐỒNG GĐ4 ↔ GĐ5 (07/10/2026, `docs/pos-agent-api.md` bản 1.1 — đề xuất RV5.4 #4 của GĐ5).
+-- Thiết kế: docs/pos-gd4-thiet-ke.md phụ lục "CHỐT HỢP ĐỒNG".
+--
+-- `PosAgent.lastSyncedAt` là giờ MÁY CHỦ nhận lô `final:true`; màn Sức khoẻ in nó như "đồng bộ xong lúc" — không phải
+-- mốc dữ liệu agent ĐÃ ĐỌC TỚI (cận trên cửa sổ search portal của lượt). Hai mốc chỉ trùng nhau khi đồng hồ máy agent
+-- đúng. Cột mới giữ `windowTo` của CHÍNH lô final đó (giờ VN ⇒ mốc tuyệt đối), ghi CÙNG phép ghi `lastSyncedAt`.
+--
+-- ADDITIVE (luật cứng #4): MỘT cột NULLABLE, không default, không backfill — agent đã đồng bộ trước bản này có
+-- `lastSyncedAt` mà cột này NULL cho tới lô final kế tiếp (màn in "chưa có"). Không đụng dữ liệu có sẵn.
+-- CHẠY LẠI ĐƯỢC ([MIG-01]): `ADD COLUMN IF NOT EXISTS`. Bảng `PosAgent` đã bật RLS ở 20261007120000_pos_gd4_pos_agent
+-- — thêm cột không cần gì thêm.
+ALTER TABLE "PosAgent" ADD COLUMN IF NOT EXISTS "duLieuDenLuc" TIMESTAMPTZ(6);
