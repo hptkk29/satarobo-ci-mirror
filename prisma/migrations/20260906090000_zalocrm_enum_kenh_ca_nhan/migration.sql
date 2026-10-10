@@ -1,0 +1,44 @@
+-- ════════════════════════════════════════════════════════════════════════════
+-- CHẠY THẾ NÀO (người vận hành, KHÔNG phải agent — luật cứng Nền Hệ thống #4)
+--
+--   1. DB dev/test (DÙNG CHUNG một DB với localhost — CLAUDE.md):
+--        npx prisma migrate deploy
+--      ⚠️ Chạy ở local là hiện ngay trên test.satarobo.vn. Migration này THUẦN THÊM
+--      nên không xoá gì của ai, nhưng vẫn phải chạy có ý thức.
+--   2. PROD: đi qua `deploy.yml` khi merge `test` → `main` (nó chạy
+--      `prisma migrate deploy`), hoặc chạy tay với DIRECT_URL của prod.
+--   3. Chạy TRƯỚC `20260906090100_zalocrm_bang_nick_thread` (thứ tự thư mục đã đúng).
+-- ════════════════════════════════════════════════════════════════════════════
+--
+-- ZaloCRM — thêm hai giá trị enum. KHÔNG có gì khác trong file này.
+--
+-- VÌ SAO ĐỨNG RIÊNG MỘT MIGRATION: Postgres cho phép `ALTER TYPE ... ADD VALUE` bên
+-- trong transaction (PG 12+), NHƯNG giá trị vừa thêm KHÔNG dùng được cho tới khi
+-- transaction đó commit. Prisma chạy mỗi file migration trong MỘT transaction ⇒ gộp
+-- chung với bất kỳ câu lệnh nào NHẮC TỚI 'ZALO_CA_NHAN' (kể cả một DEFAULT hay một
+-- backfill) sẽ ném `unsafe use of new value "ZALO_CA_NHAN" of enum type "InboxChannel"`
+-- và migration chết GIỮA CHỪNG trên prod.
+-- ⇒ File này CHỈ được chứa ALTER TYPE. Đừng thêm gì vào đây.
+--
+-- IF NOT EXISTS có chủ đích (nếp 20260811020000 / 20260731101500): DB dev dùng chung
+-- nhiều nhánh, SQL có thể đã được áp bằng `prisma db execute` trước khi `migrate deploy`
+-- ghi nhận migration này — chạy lại phải no-op, không được fail.
+--
+-- ADD VALUE là thao tác THÊM thuần: không viết lại bảng, không khoá dữ liệu, và KHÔNG
+-- ĐẢO NGƯỢC ĐƯỢC (Postgres không có DROP VALUE). Đó là lý do phải chốt tên trước, và
+-- là lý do thêm CẢ HAI giá trị ngay bây giờ dù giá trị thứ hai tới GĐ3 mới dùng:
+-- thêm sau tốn thêm một migration nữa mà không được gì.
+--
+--   ZALO_CA_NHAN  — nick Zalo CÁ NHÂN của Sale, đi qua ZaloCRM. Kênh RIÊNG, không
+--                   phải biến thể của ZALO_OA (khác ràng buộc nền tảng, khác hạn mức,
+--                   khác người chịu trách nhiệm khi nick bị khoá).
+--   EXTERNAL_TAG  — lý do nối danh tính vào Lead: ZaloCRM ghi sẵn
+--                   `Contact.externalRef = 'sata:lead:<id>'` nên danh tính về đã kèm
+--                   số phiếu. CỐ Ý KHÔNG tái dùng `WEBHOOK_PROFILE`: giá trị đó là
+--                   BẰNG CHỨNG ĐỒNG Ý (khách tự bấm "Chia sẻ thông tin" của Zalo OA);
+--                   ghi một phép nối máy-với-máy vào đó là làm hỏng vết đồng ý — thứ
+--                   duy nhất chứng minh được khách đã tự đưa số cho mình.
+
+ALTER TYPE "InboxChannel" ADD VALUE IF NOT EXISTS 'ZALO_CA_NHAN';
+
+ALTER TYPE "InboxIdentityLinkSource" ADD VALUE IF NOT EXISTS 'EXTERNAL_TAG';

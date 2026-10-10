@@ -1,0 +1,299 @@
+name: CI gương
+
+# ══ CI CỦA REPO GƯƠNG PUBLIC (hptkk29/satarobo-ci-mirror) ══════════════════════════════
+#
+# Tệp gốc nằm ở satarobo-vn (PRIVATE) tại `ci-guong/ci.yml`; `scripts/ci/xuat-ban-guong.sh` chép
+# nó vào ảnh chụp thành `.github/workflows/ci.yml` (và `ci-guong/actions/*` thành
+# `.github/actions/*`). SỬA Ở satarobo-vn, đừng sửa ở gương — mỗi lần đẩy là ghi đè.
+#
+# Luồng: PR ở satarobo-vn ⇒ `dong-bo-guong.yml` xuất ảnh chụp đã lọc ⇒ commit MỒ CÔI trên nhánh
+# `pr-<số>` ở đây ⇒ CI này ⇒ job cuối ghi commit status "ci-guong" về SHA gốc.
+#
+# ⚠️ AN TOÀN: trigger DUY NHẤT là `push` lên `pr-*` (KHÔNG `pull_request` / `pull_request_target`
+# — người lạ fork rồi mở PR không chạy được gì, không chạm `STATUS_TOKEN`). Chỉ `ubuntu-latest`.
+# Không secret prod; NEXTAUTH_SECRET là chuỗi TEST; secret duy nhất `STATUS_TOKEN` (chỉ quyền ghi
+# commit status lên satarobo-vn), dùng ở job cuối.
+#
+# ══ CHIA 10 JOB LÀM VIỆC [10/10/2026] ══════════════════════════════════════════════════
+# Tài khoản Free: tối đa 20 job đồng thời ⇒ một lượt ≤ 10 job làm việc (2 PR song song vẫn vừa).
+# Job "Báo trạng thái" chạy SAU khi 10 job kia xong nên không bao giờ là job thứ 11 cùng lúc.
+#   build ─┬► a0 (1/2 + smoke) ─┐
+#          └► a0 (2/2 + GV + EL-07)
+#   unit 1/3 · 2/3 · 3/3            ├► bao-trang-thai
+#   quality (tsc ‖ eslint ‖ depcruise) + Vitest DB
+#   r7 1/3 + CRM · r7 2/3 + R1 · r7 3/3 + FL ┘
+# Cache: store pnpm · ms-playwright · .next/cache · tsbuildinfo · cache eslint (key lockfile + hash
+# nguồn, restore-keys theo lockfile). Mỗi job một máy + một Postgres riêng ⇒ cổng 5432 cố định.
+# Env từng bộ giữ NGUYÊN như `ci.yml` private — lý do từng biến nằm ở đó.
+# Thêm bộ test vào `ci.yml` thì PHẢI thêm ở đây — lưới `[CIG-*]` (ci-rieng) đỏ nếu quên.
+
+on:
+  push:
+    branches: ["pr-*"]
+
+concurrency:
+  group: ci-guong-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NEXTAUTH_SECRET: "ci-build-only-secret-do-not-use-in-prod-32chars"
+  DB: postgresql://ci:ci@localhost:5432
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('app/**', 'components/**', 'lib/**', 'content/**', 'public/**', 'next.config.ts', 'proxy.ts') }}
+          restore-keys: next-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+      - name: Migrate DB schema (ISR công khai tra DB lúc build)
+        run: pnpm exec prisma migrate deploy
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" }
+      - name: Build
+        run: pnpm build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=6144"
+          # Bỏ pass TypeScript trong `next build` — job quality đã phủ (next.config.ts).
+          CI_BO_TS_TRONG_BUILD: "1"
+          DATABASE_URL: "${{ env.DB }}/ci_test"
+          DIRECT_URL: "${{ env.DB }}/ci_test"
+          NEXTAUTH_URL: "http://localhost:3000"
+          NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+      - name: Canary — không secret nào lọt bundle client
+        run: node scripts/canary-client-bundle-keys.mjs
+      # tar GIỮ symlink trong `.next/node_modules`; mọi job trên máy GitHub cùng đường workspace.
+      - name: Đóng gói bản build
+        run: tar --exclude=.next/cache --exclude=.next/standalone -cf next-build.tar .next
+      - uses: actions/upload-artifact@v4
+        with: { name: next-build, path: next-build.tar, retention-days: 1 }
+
+  unit:
+    name: Unit tests (Vitest) ${{ matrix.shard }}/3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      # DATABASE_URL trỏ cổng KHÔNG AI NGHE — ca thuần lỡ chạm DB phải ĐỎ. Test đọc thứ không có ở
+      # gương đã bị loại khỏi ảnh chụp và chạy ở `ci-rieng.yml` (scripts/ci/test-chi-rieng.txt).
+      - name: Unit tests (Vitest)
+        run: pnpm exec vitest run --reporter=verbose --shard=${{ matrix.shard }}/3
+        env:
+          DATABASE_URL: postgresql://x:x@127.0.0.1:59999/khong_ton_tai
+          DIRECT_URL: postgresql://x:x@127.0.0.1:59999/khong_ton_tai
+
+  quality-db:
+    name: Typecheck ‖ Lint ‖ Boundaries + Vitest DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: quality-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('app/**', 'components/**', 'lib/**', 'scripts/**', 'tests/**', 'pos-agent-extension/**', 'tsconfig.json', 'eslint.config.mjs') }}
+          restore-keys: quality-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+      # Ba việc ĐỘC LẬP chạy SONG SONG trong một máy (4 vCPU). Log từng việc in riêng một nhóm;
+      # việc nào đỏ thì bước đỏ. tsc `--incremental` + eslint `--cache` ăn cache `.cache/` ở trên.
+      - name: Typecheck ‖ Lint ‖ Boundaries
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          mkdir -p .cache/tsc .cache/eslint "$RUNNER_TEMP/q"
+          ( node --max-old-space-size=6144 node_modules/typescript/bin/tsc --noEmit --incremental \
+              --tsBuildInfoFile .cache/tsc/tsbuildinfo > "$RUNNER_TEMP/q/typecheck.log" 2>&1; echo $? > "$RUNNER_TEMP/q/typecheck.rc" ) &
+          ( pnpm lint --cache --cache-location .cache/eslint/ > "$RUNNER_TEMP/q/lint.log" 2>&1; echo $? > "$RUNNER_TEMP/q/lint.rc" ) &
+          ( pnpm lint:boundaries > "$RUNNER_TEMP/q/boundaries.log" 2>&1; echo $? > "$RUNNER_TEMP/q/boundaries.rc" ) &
+          wait
+          LOI=0
+          for v in typecheck lint boundaries; do
+            rc=$(cat "$RUNNER_TEMP/q/$v.rc")
+            echo "::group::$v (mã thoát $rc)"; cat "$RUNNER_TEMP/q/$v.log"; echo "::endgroup::"
+            [ "$rc" = "0" ] || { echo "::error::$v đỏ (mã thoát $rc)"; LOI=1; }
+          done
+          exit $LOI
+      - name: Migrate + seed quyền (RBAC v2 đọc quyền từ DỮ LIỆU)
+        if: ${{ !cancelled() }}
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed-roles.ts
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" }
+      - { name: Run chat DB tests, if: "${{ !cancelled() }}", run: pnpm test:chat-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run nền-hệ-thống DB tests, if: "${{ !cancelled() }}", run: pnpm test:nen-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run lead-intake DB tests, if: "${{ !cancelled() }}", run: pnpm test:lead-intake, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run inbox DB tests, if: "${{ !cancelled() }}", run: pnpm test:inbox-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run chấm-công DB tests, if: "${{ !cancelled() }}", run: pnpm test:cham-cong-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run finance DB tests, if: "${{ !cancelled() }}", run: pnpm test:finance-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run khuyến mãi DB tests, if: "${{ !cancelled() }}", run: pnpm test:khuyen-mai-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run hoa hồng DB tests, if: "${{ !cancelled() }}", run: pnpm test:hoa-hong-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run học bù (toàn vẹn) DB tests, if: "${{ !cancelled() }}", run: pnpm test:hoc-bu-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+
+  r7:
+    name: E2E R7 ${{ matrix.shard }}/3 + ${{ matrix.kem }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, kem: CRM }
+          - { shard: 2, kem: R1 }
+          - { shard: 3, kem: FL }
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      NEXTAUTH_URL: "http://localhost:3100"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3100"
+      BASE_URL: "http://localhost:3100"
+      R7_SKIP_WEBSERVER: "1"
+      CRM_SKIP_WEBSERVER: "1"
+      R1_SKIP_WEBSERVER: "1"
+      FL_SKIP_WEBSERVER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+        with: { playwright: "true" }
+      # Mỗi bộ một database (resetDb của bộ này không xoá dữ liệu bộ kia). Tên chứa `ci_test`.
+      - name: Tạo database riêng
+        run: PGPASSWORD=ci createdb -h localhost -U ci ci_test_kem
+      # Gọi THẲNG playwright: `pnpm test:e2e:r7 -- --shard=…` làm `--shard` thành bộ lọc tên tệp.
+      - name: Run Phase R7 e2e ${{ matrix.shard }}/3
+        run: pnpm exec playwright test -c playwright.r7.config.ts --shard=${{ matrix.shard }}/3
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test", PLAYWRIGHT_HTML_OUTPUT_DIR: "bao-cao-ci/r7-${{ matrix.shard }}" }
+      - name: Run Phase CRM e2e
+        if: ${{ !cancelled() && matrix.kem == 'CRM' }}
+        run: pnpm test:e2e:crm
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_kem", DIRECT_URL: "${{ env.DB }}/ci_test_kem", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/crm }
+      # ⚠️ Cố ý bỏ spec cần trình duyệt `crm-ui.spec.ts` (describe "CRM UI") — như ci.yml private.
+      - name: Run Phase R1 e2e (bỏ qua spec cần trình duyệt)
+        if: ${{ !cancelled() && matrix.kem == 'R1' }}
+        run: pnpm exec playwright test -c playwright.r1.config.ts --grep-invert "CRM UI"
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_kem", DIRECT_URL: "${{ env.DB }}/ci_test_kem", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/r1 }
+      - name: Run Phase FL e2e
+        if: ${{ !cancelled() && matrix.kem == 'FL' }}
+        run: pnpm test:e2e:fl
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_kem", DIRECT_URL: "${{ env.DB }}/ci_test_kem", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/fl }
+      - if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: "bao-cao-r7-${{ matrix.shard }}", path: bao-cao-ci/, retention-days: 7 }
+
+  a0:
+    name: E2E A0 ${{ matrix.shard }}/2 + ${{ matrix.kem }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, kem: smoke }
+          - { shard: 2, kem: "site GV + EL-07" }
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      # `lib/auth.ts:132` chặn 5 lượt/phút theo ĐỊNH DANH, bộ đếm trong bộ nhớ server ⇒ bộ e2e
+      # đăng nhập lại nhiều lần bằng vài tài khoản sẽ treo ở /login. Lý do đầy đủ ở ci.yml private.
+      LOGIN_RATELIMIT_DISABLED: "1"
+      DEBUG: pw:webserver
+      E2E_PORT: "3100"
+      PORT: "3100"
+      TEACHER_E2E_PORT: "3100"
+      ELEARNING_E2E_PORT: "3100"
+      BASE_URL: "http://localhost:3100"
+      NEXTAUTH_URL: "http://localhost:3100"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3100"
+      AUTH_URL: "http://localhost:3100"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+        with: { playwright: "true" }
+      - uses: actions/download-artifact@v4
+        with: { name: next-build }
+      - name: Giải nén bản build
+        run: tar -xf next-build.tar && rm next-build.tar
+      - name: Tạo database riêng cho từng bộ
+        run: for d in ci_test_a0 ci_test_smoke ci_test_gv ci_test_el; do PGPASSWORD=ci createdb -h localhost -U ci "$d"; done
+      - name: Run Phase A0 e2e ${{ matrix.shard }}/2
+        run: bash scripts/ci/cho-canh.sh 12 pnpm exec playwright test -c playwright.a0.config.ts --shard=${{ matrix.shard }}/2
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_a0", DIRECT_URL: "${{ env.DB }}/ci_test_a0", PLAYWRIGHT_HTML_OUTPUT_DIR: "bao-cao-ci/a0-${{ matrix.shard }}" }
+      - name: Migrate + seed DB cho smoke
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm db:seed
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_smoke", DIRECT_URL: "${{ env.DB }}/ci_test_smoke" }
+      # Chỉ `chromium-desktop`: 13 ca không ca nào kiểm riêng di động (như ci.yml private).
+      - name: Run Playwright smoke tests
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: bash scripts/ci/cho-canh.sh 12 pnpm exec playwright test --project=chromium-desktop
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_smoke", DIRECT_URL: "${{ env.DB }}/ci_test_smoke", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/smoke }
+      - name: Run teacher-site browser e2e
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        run: bash scripts/ci/cho-canh.sh 16 pnpm test:e2e:teacher
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_gv", DIRECT_URL: "${{ env.DB }}/ci_test_gv", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/site-gv }
+      - name: Run e-learning browser e2e
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        run: bash scripts/ci/cho-canh.sh 16 pnpm test:e2e:elearning
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_el", DIRECT_URL: "${{ env.DB }}/ci_test_el", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/el-07 }
+      - if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: "bao-cao-a0-${{ matrix.shard }}", path: bao-cao-ci/, retention-days: 7 }
+
+  bao-trang-thai:
+    name: Báo trạng thái về satarobo-vn
+    needs: [build, unit, quality-db, r7, a0]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # SHA gốc nằm trong commit message do `dong-bo-guong.yml` viết: "PR #<số> · <sha 40 ký tự>".
+      - name: Ghi commit status "ci-guong" lên SHA gốc
+        env:
+          GH_TOKEN: ${{ secrets.STATUS_TOKEN }}
+          MSG: ${{ github.event.head_commit.message }}
+          KET_QUA: ${{ contains(needs.*.result, 'failure') && 'failure' || (contains(needs.*.result, 'cancelled') && 'error' || 'success') }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA=$(printf '%s' "$MSG" | grep -oE '[0-9a-f]{40}' | head -1)
+          [ -n "$SHA" ] || { echo "::error::Không đọc được SHA gốc từ commit message"; exit 1; }
+          case "$KET_QUA" in success) MO="Mọi bộ xanh";; failure) MO="Có bộ đỏ";; *) MO="Bị huỷ";; esac
+          gh api -X POST "repos/hptkk29/satarobo-vn/statuses/$SHA" \
+            -f state="$KET_QUA" -f context="ci-guong" -f target_url="$URL" -f description="$MO"

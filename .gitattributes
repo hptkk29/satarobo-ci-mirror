@@ -1,0 +1,5 @@
+# File chạy trên VPS Linux: phải giữ LF kể cả khi checkout trên Windows (autocrlf=true),
+# nếu không bash báo "$'': command not found" và cron/backup chết im.
+*.sh text eol=lf
+deploy/** text eol=lf
+Dockerfile text eol=lf

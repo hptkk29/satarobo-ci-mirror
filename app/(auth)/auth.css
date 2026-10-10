@@ -1,0 +1,225 @@
+/* Trang đăng nhập "Waves" — port từ AuthenUI, thích ứng token Tailwind v4 (OKLCH)
+   của satarobo-vn. Scoped dưới .auth-root; Sáng/Tối theo class .dark TRÊN .auth-root
+   (toggle tự quản trong layout, không đụng phần còn lại của app). */
+
+/* ── Wave gradient stops (Sáng: tím→cam nhạt) ── */
+.auth-root .wave-stop-1a { stop-color: #ddd6fe; }
+.auth-root .wave-stop-1b { stop-color: #c4b5fd; }
+.auth-root .wave-stop-2a { stop-color: #c4b5fd; }
+.auth-root .wave-stop-2b { stop-color: #a78bfa; }
+.auth-root .wave-stop-3a { stop-color: #fdba74; }
+.auth-root .wave-stop-3b { stop-color: #fb923c; }
+.auth-root .wave-stop-4a { stop-color: #fb923c; }
+.auth-root .wave-stop-4b { stop-color: #f97316; }
+.auth-root .blob-1 { fill: rgba(196, 181, 253, 0.30); }
+.auth-root .blob-2 { fill: rgba(249, 115, 22, 0.14); }
+.auth-root .blob-3 { fill: rgba(124, 58, 237, 0.12); }
+
+/* ── Wave gradient stops (Tối) ── */
+.auth-root.dark .wave-stop-1a { stop-color: #8b5cf6; }
+.auth-root.dark .wave-stop-1b { stop-color: #7c3aed; }
+.auth-root.dark .wave-stop-2a { stop-color: #7c3aed; }
+.auth-root.dark .wave-stop-2b { stop-color: #6d28d9; }
+.auth-root.dark .wave-stop-3a { stop-color: #fb923c; }
+.auth-root.dark .wave-stop-3b { stop-color: #f97316; }
+.auth-root.dark .wave-stop-4a { stop-color: #f97316; }
+.auth-root.dark .wave-stop-4b { stop-color: #ea580c; }
+.auth-root.dark .blob-1 { fill: rgba(139, 92, 246, 0.12); }
+.auth-root.dark .blob-2 { fill: rgba(249, 115, 22, 0.10); }
+.auth-root.dark .blob-3 { fill: rgba(124, 58, 237, 0.08); }
+
+/* ── Root container ── */
+/* CỘT: thẻ (.auth-main, chiếm phần còn lại, căn giữa) rồi dải link pháp lý (.auth-footer) TRONG
+   DÒNG — không `position: fixed` nữa (nợ kỹ thuật #25, 28/09/2026: dải cố định đè lên thẻ cao hơn
+   khung nhìn, vd form kích hoạt trên điện thoại). `100svh` sau `100vh`: trình duyệt di động tính theo
+   khung nhìn NHỎ (thanh địa chỉ đang hiện) ⇒ thẻ ngắn không sinh cuộn thừa; trình duyệt cũ dùng vh. */
+.auth-root {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  background: var(--background);
+  overflow: hidden;
+  transition: background 0.4s ease;
+}
+.auth-root .auth-main {
+  position: relative; z-index: 10;
+  flex: 1 0 auto;
+  width: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
+.auth-root .auth-footer {
+  position: relative; z-index: 10;
+  flex: none;
+  padding-top: 1rem;
+}
+.auth-root.dark { background: oklch(0.145 0 0); color: oklch(0.985 0 0); }
+.auth-root ::selection { background: var(--primary); color: #ffffff; }
+
+/* ── Waves ── */
+.auth-root .bg-waves { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.auth-root .wave { transition: fill 0.4s ease; }
+.auth-root .wave-1 { opacity: 0.4; animation: wave-drift-1 12s ease-in-out infinite alternate; }
+.auth-root .wave-2 { opacity: 0.45; animation: wave-drift-2 10s ease-in-out infinite alternate; }
+.auth-root .wave-3 { opacity: 0.55; animation: wave-drift-3 8s ease-in-out infinite alternate; }
+.auth-root .wave-4 { opacity: 0.7; animation: wave-drift-4 14s ease-in-out infinite alternate; }
+.auth-root.dark .wave-1 { opacity: 0.22; }
+.auth-root.dark .wave-2 { opacity: 0.26; }
+.auth-root.dark .wave-3 { opacity: 0.32; }
+.auth-root.dark .wave-4 { opacity: 0.4; }
+
+@keyframes wave-drift-1 {
+  0%   { d: path("M0,620 C120,580 200,650 360,590 C520,530 600,610 720,570 C840,530 960,620 1080,560 C1200,500 1320,600 1440,550 L1440,900 L0,900 Z"); }
+  100% { d: path("M0,590 C160,640 280,570 420,610 C560,560 680,640 800,580 C920,540 1040,630 1160,580 C1280,530 1380,610 1440,570 L1440,900 L0,900 Z"); }
+}
+@keyframes wave-drift-2 {
+  0%   { d: path("M0,700 C100,660 180,720 300,680 C420,640 520,710 660,670 C800,630 900,700 1040,660 C1180,620 1300,700 1440,660 L1440,900 L0,900 Z"); }
+  100% { d: path("M0,680 C140,710 240,660 380,700 C520,660 640,720 760,680 C880,650 1000,710 1120,680 C1240,650 1360,710 1440,680 L1440,900 L0,900 Z"); }
+}
+@keyframes wave-drift-3 {
+  0%   { d: path("M0,760 C80,730 160,770 280,740 C400,710 480,760 600,730 C720,700 840,760 960,730 C1080,700 1200,760 1320,730 C1380,715 1420,740 1440,730 L1440,900 L0,900 Z"); }
+  100% { d: path("M0,740 C120,760 200,720 320,750 C440,720 560,770 680,740 C800,710 920,760 1040,735 C1160,710 1280,755 1380,735 C1420,725 1440,745 1440,740 L1440,900 L0,900 Z"); }
+}
+@keyframes wave-drift-4 {
+  0%   { d: path("M0,810 C100,790 180,820 280,800 C380,780 460,810 560,795 C660,780 760,810 860,795 C960,780 1060,810 1160,795 C1260,780 1360,808 1440,795 L1440,900 L0,900 Z"); }
+  100% { d: path("M0,800 C80,815 180,790 280,808 C380,790 480,815 580,798 C680,785 780,812 880,798 C980,785 1080,812 1180,800 C1280,788 1380,810 1440,800 L1440,900 L0,900 Z"); }
+}
+
+/* ── Blobs ── */
+.auth-root .bg-blobs { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.auth-root .blob { filter: blur(100px); transition: fill 0.4s ease; }
+.auth-root .blob-1 { animation: blob-float-1 20s ease-in-out infinite alternate; }
+.auth-root .blob-2 { animation: blob-float-2 24s ease-in-out infinite alternate; }
+.auth-root .blob-3 { animation: blob-float-3 18s ease-in-out infinite alternate; }
+
+@keyframes blob-float-1 { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(80px, 60px) scale(1.15); } }
+@keyframes blob-float-2 { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(-60px, 40px) scale(1.1); } }
+@keyframes blob-float-3 { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(40px, -50px) scale(1.2); } }
+
+/* ── Theme toggle ── */
+.auth-root .theme-toggle {
+  position: fixed; top: 0.75rem; right: 0.75rem; z-index: 100;
+  width: 2.75rem; height: 2.75rem; border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--card) 65%, transparent);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  color: var(--foreground); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+.auth-root .theme-toggle:hover { background: var(--muted); transform: scale(1.05); }
+.auth-root .theme-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.auth-root .theme-toggle:active { transform: scale(0.95); }
+
+/* ── Card ── */
+.auth-root .my-form {
+  position: relative; z-index: 10;
+  display: flex; flex-direction: column; gap: 1.25rem;
+  background-color: var(--card); border: 1px solid var(--border);
+  width: 100%; max-width: 26rem; padding: 2.5rem 2rem; border-radius: 1.25rem;
+  box-shadow: 0 25px 60px -12px rgba(124, 58, 237, 0.18), 0 8px 24px -8px rgba(15, 23, 42, 0.08);
+  transition: background-color 0.4s ease, border-color 0.4s ease;
+}
+.auth-root.dark .my-form { background-color: oklch(0.205 0 0); box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.6), 0 0 80px -20px rgba(124, 58, 237, 0.14); }
+
+/* ── Nút back (góc trái trên trong card) ── */
+.auth-root .my-form__back {
+  position: absolute; left: 0.75rem; top: 0.75rem; z-index: 20;
+  width: 2.25rem; height: 2.25rem; display: grid; place-items: center;
+  border-radius: 0.625rem; color: var(--muted-foreground); cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+.auth-root .my-form__back:hover { background: var(--muted); color: var(--foreground); }
+.auth-root .my-form__back:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.auth-root.dark .my-form__back:hover { background: oklch(0.269 0 0); color: oklch(0.985 0 0); }
+.auth-root .my-form__back svg { width: 1.25rem; height: 1.25rem; }
+
+/* ── Welcome / brand ── */
+.auth-root .login-welcome-row { text-align: center; margin-bottom: 0.25rem; }
+.auth-root .login-welcome-row h1 { font-size: 1.625rem; font-weight: 800; color: var(--foreground); letter-spacing: -0.025em; line-height: 1.2; margin-bottom: 0.375rem; }
+.auth-root .login-welcome-row p { font-size: 0.9375rem; color: var(--muted-foreground); font-weight: 400; }
+
+/* ── Inputs ── */
+.auth-root .input__wrapper { position: relative; }
+.auth-root .input__field {
+  font-family: inherit; font-size: 0.9375rem; font-weight: 500; color: var(--foreground);
+  width: 100%; padding: 0.8125rem 3.25rem 0.8125rem 2.75rem;
+  background: var(--background); border: 1.5px solid var(--input); border-radius: 0.75rem;
+  outline: none; transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.auth-root.dark .input__field { background: oklch(0.145 0 0); }
+.auth-root .input__field::placeholder { color: transparent; }
+.auth-root .input__field:hover { border-color: var(--muted-foreground); }
+.auth-root .input__field:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 18%, transparent); }
+
+.auth-root .input__label {
+  position: absolute; top: 50%; left: 2.75rem; transform: translateY(-50%);
+  font-size: 0.9375rem; font-weight: 400; color: var(--muted-foreground);
+  pointer-events: none; transition: all 0.2s ease;
+}
+.auth-root .input__field:not(:placeholder-shown) ~ .input__label,
+.auth-root .input__field:focus ~ .input__label {
+  top: 0; left: 0.75rem; transform: translateY(-50%);
+  font-size: 0.75rem; font-weight: 600; color: var(--primary);
+  background: var(--card); padding: 0 0.25rem;
+}
+.auth-root.dark .input__field:not(:placeholder-shown) ~ .input__label,
+.auth-root.dark .input__field:focus ~ .input__label { background: oklch(0.205 0 0); }
+.auth-root .input__icon {
+  position: absolute; left: 0.875rem; top: 50%; transform: translateY(-50%);
+  width: 1.125rem; height: 1.125rem; color: var(--muted-foreground);
+  pointer-events: none; transition: color 0.2s ease;
+}
+.auth-root .input__wrapper:focus-within .input__icon { color: var(--primary); }
+
+/* ── Password ── */
+.auth-root .password-error { display: none; margin-top: 0.375rem; font-size: 0.75rem; font-weight: 500; color: var(--destructive); }
+.auth-root .password-error.visible { display: block; }
+.auth-root .password-toggle {
+  position: absolute; right: 0.625rem; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; width: 2rem; height: 2rem; padding: 0;
+  display: flex; align-items: center; justify-content: center; border-radius: 0.5rem;
+  color: var(--muted-foreground); transition: color 0.2s ease, background-color 0.2s ease;
+}
+.auth-root .password-toggle:hover { color: var(--primary); background-color: var(--muted); }
+.auth-root .password-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.auth-root .password-toggle svg { width: 1.25rem; height: 1.25rem; }
+
+/* ── Submit button (CTA cam) ── */
+.auth-root .my-form__button {
+  font-family: inherit; background: #f97316; color: #ffffff; border: none;
+  display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 0.25rem;
+  padding: 0.875rem; font-size: 0.9375rem; font-weight: 700; letter-spacing: 0.01em;
+  cursor: pointer; width: 100%; border-radius: 0.75rem;
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+.auth-root .my-form__button:hover { background: #ea580c; box-shadow: 0 0 20px -4px rgba(249, 115, 22, 0.4); }
+.auth-root .my-form__button:active { background: #c2410c; }
+.auth-root .my-form__button:focus-visible { outline: 2px solid #ea580c; outline-offset: 2px; }
+.auth-root .my-form__button:disabled { opacity: 0.7; cursor: not-allowed; }
+
+/* ── Actions ── */
+.auth-root .my-form__actions { display: flex; flex-direction: column; align-self: center; width: 100%; margin-top: 0.25rem; }
+.auth-root .my-form__actions a { font-size: 0.8125rem; color: var(--muted-foreground); font-weight: 600; text-decoration: none; transition: color 0.2s ease; }
+.auth-root .my-form__actions a:hover { color: var(--primary); }
+.auth-root .my-form__actions a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 0.125rem; }
+.auth-root .my-form__actions span { font-size: 0.8125rem; color: var(--muted-foreground); }
+.auth-root .my-form__row { display: flex; justify-content: center; align-items: center; gap: 0.5rem; }
+
+/* ── Alerts (reason) ── */
+.auth-root .auth-alert { display: flex; gap: 0.5rem; align-items: flex-start; border-radius: 0.75rem; padding: 0.75rem; font-size: 0.8125rem; line-height: 1.35; }
+.auth-root .auth-alert--warn { border: 1px solid #fcd34d; background: #fffbeb; color: #92400e; }
+.auth-root .auth-alert--danger { border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; }
+
+/* ── Responsive ── */
+@media (max-width: 480px) {
+  .auth-root .my-form { padding: 2rem 1.5rem; border-radius: 1rem; }
+  .auth-root .my-form__row { flex-direction: column; gap: 0.5rem; text-align: center; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-root *, .auth-root *::before, .auth-root *::after {
+    animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important;
+  }
+}
