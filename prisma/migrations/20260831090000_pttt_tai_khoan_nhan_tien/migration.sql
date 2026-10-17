@@ -1,0 +1,13 @@
+-- TÀI KHOẢN NHẬN TIỀN GẮN VÀO PHƯƠNG THỨC THANH TOÁN (31/08/2026)
+--
+-- Thêm ĐÚNG MỘT cột nullable. Bốn cột bank* còn lại đã có sẵn từ trước (vốn là dữ liệu
+-- chết) — đợt này chỉ thay đổi Ý NGHĨA của chúng: từ nay chúng là nguồn dựng mã QR.
+-- KHÔNG đổi kiểu, KHÔNG bỏ cột — luật cứng Nền Hệ thống #4.
+--
+-- ⚠️ KHÔNG backfill ở đây. Dữ liệu cũ (nếu có) nằm ở `IntegrationConfig` khoá
+-- `VIETQR:<centerId>` và phải chuyển bằng script chạy TAY có dry-run:
+--   pnpm exec tsx scripts/pttt-chuyen-tai-khoan-vietqr.ts            # xem trước
+--   pnpm exec tsx scripts/pttt-chuyen-tai-khoan-vietqr.ts --commit   # ghi thật
+-- Lý do không nhét vào migration: nó phải TẠO phương thức thanh toán mới cho từng cơ sở
+-- (đặt mã, đặt tên, chọn cờ canBuy*) — việc nghiệp vụ, không phải việc của DDL.
+ALTER TABLE "PaymentMethod" ADD COLUMN IF NOT EXISTS "bankBin" TEXT;
