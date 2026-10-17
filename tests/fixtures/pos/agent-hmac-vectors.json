@@ -1,0 +1,49 @@
+{
+  "_ghiChu": "Dựng từ docs/pos-agent-api.md §3.8 (thân V2/V3 đọc từ chính tệp). CHỈ ĐỂ TEST — master key giả.",
+  "masterKey": "pos-agent-master-key-CHI-DE-TEST-khong-dung-that-0123456789",
+  "agentId": "cm9posagentcs1test0000001",
+  "secretVersion": 1,
+  "agentSecret": "293c3ade00fc88792aba32e1c692d50596efbb52b42967973aea1c6f55f855a9",
+  "vectors": [
+    {
+      "ten": "V1",
+      "method": "GET",
+      "path": "/api/pos-agent/jobs",
+      "ts": "1791343200000",
+      "nonce": "5f0c1a9e2b7d4c3e8a6f1b2d3c4e5f60",
+      "body": "",
+      "bodyBytes": 0,
+      "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "chuoiKy": "GET\n/api/pos-agent/jobs\n1791343200000\n5f0c1a9e2b7d4c3e8a6f1b2d3c4e5f60\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sig": "de599aaf3f7a7a273d9d7f19a905e26f4f7cba4adba4e699f557608a4f6332ce"
+    },
+    {
+      "ten": "V2",
+      "method": "POST",
+      "path": "/api/pos-agent/heartbeat",
+      "ts": "1791343201500",
+      "nonce": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+      "body": "{\"extensionVersion\":\"0.1.0\",\"sessionState\":\"READY\",\"sessionExpiresAt\":\"2026-10-08T08:15:00+07:00\",\"lastSyncedAt\":\"2026-10-07T10:19:30+07:00\",\"profileName\":\"CS1\"}",
+      "bodyBytes": 161,
+      "bodySha256": "c8aaf8aa0140c43d277596ee81d2baf1f2c9e9169fed8a270fd10a922b0ab69d",
+      "chuoiKy": "POST\n/api/pos-agent/heartbeat\n1791343201500\na1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6\nc8aaf8aa0140c43d277596ee81d2baf1f2c9e9169fed8a270fd10a922b0ab69d",
+      "sig": "fa2e93875455a9d6bd3d8cdbe73e79a7eceda1ff68c863391f90028684c6da33"
+    },
+    {
+      "ten": "V3",
+      "method": "POST",
+      "path": "/api/pos-agent/transactions",
+      "ts": "1791343203000",
+      "nonce": "0123456789abcdef0123456789abcdef",
+      "body": "{\"syncId\":\"sync-20261007-102000-cs1\",\"batchIndex\":0,\"final\":true,\"windowFrom\":\"2026-10-07 08:20:00\",\"windowTo\":\"2026-10-07 10:20:00\",\"jobIds\":[\"cm9posjob0000000000000001\"],\"transactions\":[{\"transaction_id\":\"TXN20261007000123\",\"transaction_type\":\"PAYMENT\",\"transaction_detail_status\":\"SUCCESS\",\"transaction_master_status\":\"SUCCESS\",\"order_description\":\"Học phí bé An K7M2N\",\"authorization_id\":\"123456\",\"card_transaction_id\":\"628012345678\",\"order_amount\":6732000,\"transaction_master_amount\":6732000,\"transaction_detail_amount\":6732000,\"fee\":null,\"currency\":\"VND\",\"transaction_time\":\"2026/10/07 10:18:42\",\"merchant_code\":\"NCCPH6KE\",\"store_code\":\"CH9TSGU9\",\"terminal_code\":\"QTT45XWQT\",\"payment_method\":\"CARD\",\"service_type\":\"OMSMARTPOS\",\"sender_card_number\":\"411111******1111\",\"sender_card_type\":\"VISA\",\"accounting_reference_id\":null,\"settlement_id\":null}]}",
+      "bodyBytes": 857,
+      "bodySha256": "c46861f341034deca561173052b5373fddc866df93da36bc1f7750eb1ccee224",
+      "chuoiKy": "POST\n/api/pos-agent/transactions\n1791343203000\n0123456789abcdef0123456789abcdef\nc46861f341034deca561173052b5373fddc866df93da36bc1f7750eb1ccee224",
+      "sig": "964e19ab22f156cc5d1397b7585474e7e8163e1e1833cfc926953b086241034a"
+    }
+  ],
+  "doiChungAm": {
+    "V1_khoaHexDecode": "603836a5b0acfc3b187cf1166c7f9fd3bfa1c17d2800d030d65a87fdc422f2b0",
+    "V1_thuaXuongDong": "8626e2c4c5f4b62e620e6c5358c295aaa97be43915515aa911ce5d64925d6872"
+  }
+}
