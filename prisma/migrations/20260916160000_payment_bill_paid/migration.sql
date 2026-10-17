@@ -1,0 +1,29 @@
+-- PHIẾU GỘP: thêm trạng thái `PAID` — chủ dự án chốt 16/09/2026 (chiều, sau bản đầu).
+--
+-- Chốt: *"Webhook chỉ tự phân bổ khi khớp phiếu OPEN VÀ số tiền = số còn phải thu của phiếu.
+-- Khi đó chia đích danh theo dòng, phiếu → PAID."*
+--
+-- ═══ VÌ SAO KHÔNG SỬA MIGRATION TRƯỚC, DÙ NÓ CHƯA MERGE ═══
+-- `20260916120000_payment_request_theo_con` đã được APPLY lên `satarobo_test` — và DB đó là DB
+-- mà `test.satarobo.vn` dùng. Sửa tệp migration đã apply là đổi checksum trong
+-- `_prisma_migrations`, và `migrate deploy` lần sau trên DB đó sẽ SẬP. Thêm một migration là
+-- đường duy nhất không phá gì.
+--
+-- ═══ VÌ SAO CẦN `PAID` RIÊNG, KHÔNG DÙNG `CLOSED` ═══
+-- Luật mới là **được ăn cả hoặc không ăn gì**: một phiếu gộp không bao giờ được lấp một phần
+-- (bất biến B2 mới: Σ phân bổ của một giao dịch ∈ {0, số tiền giao dịch}). Nên vòng đời thật
+-- chỉ còn ba trạng thái:
+--   · OPEN      — chờ tiền
+--   · PAID      — đã thu ĐỦ, chia xong theo dòng
+--   · VOID      — huỷ, phát phiếu khác
+-- `CLOSED` sinh ra cho luồng cũ ("đóng phiếu khi đã nhận một phần" — `CLOSED_PARTIAL` của bản
+-- thiết kế). Luồng mới KHÔNG có trạng thái đó nữa; cột giữ giá trị để không phá enum, nhưng
+-- không đường ghi nào được đặt nó (có ca ghim ở `chia-phieu-gop.test.ts`).
+--
+-- ADDITIVE thuần: `ALTER TYPE ... ADD VALUE` không đụng dòng nào. Bảng `PaymentBill` cũng đang
+-- 0 dòng ở mọi môi trường (tạo hôm nay).
+--
+-- ⚠️ `ADD VALUE` KHÔNG chạy được trong transaction ở Postgres < 12. Repo dùng Postgres 16
+-- (local) và Supabase 15+ nên an toàn; `IF NOT EXISTS` để migration chạy lại được.
+
+ALTER TYPE "PaymentBillStatus" ADD VALUE IF NOT EXISTS 'PAID';
