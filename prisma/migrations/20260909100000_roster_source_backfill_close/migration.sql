@@ -1,0 +1,17 @@
+-- AlterEnum
+--
+-- Thêm MỘT giá trị vào `ClassRosterSource` cho lệnh backfill đóng buổi
+-- (`scripts/backfill-dong-buoi-thoa.ts`, 09/09/2026).
+--
+-- Vì sao cần giá trị riêng thay vì dùng lại `SNAPSHOT`: `completeSession` đếm ghi danh
+-- ĐANG CÓ tại lúc gọi. Với một buổi dạy từ tháng 4 mà đóng vào tháng 9, con số đó là sĩ số
+-- HÔM NAY — số suy đoán, không phải số đo lúc dạy. Ghi `SNAPSHOT` là để
+-- `lib/payroll/roster-guard.ts` NHẬN nó vào công thức lương.
+--
+-- Vì sao không dùng lại `FROM_ENROLLMENT`: giá trị đó thuộc lệnh backfill SĨ SỐ, một việc
+-- khác. Trộn hai nguồn vào một nhãn là mất dấu vết.
+--
+-- AN TOÀN: chỉ THÊM giá trị, không đổi/xoá cột, không đụng dòng nào đang có. Postgres 12+
+-- cho phép `ADD VALUE` trong transaction miễn là giá trị mới không được DÙNG trong cùng
+-- transaction — migration này không dùng.
+ALTER TYPE "ClassRosterSource" ADD VALUE 'BACKFILL_CLOSE';
