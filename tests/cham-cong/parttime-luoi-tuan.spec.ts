@@ -1,0 +1,220 @@
+// [LT-DB-*] — lưới phân công giáo viên trên Postgres THẬT, chạy qua CHÍNH bộ đồng bộ Parttime (`dongBoNgay`): dữ liệu nguồn đổi
+// (tạo / dời / huỷ buổi, giao / huỷ trực, đổi GV) ⇒ `docLuoiTuan` ra mã mới — không ai sửa lưới tay. Thuần: lib/parttime/luoi-tuan*.test.ts.
+// Chạy: TEST_DATABASE_URL=postgresql://…/satarobo_test… pnpm test:cham-cong-db
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { PrismaClient } from "@prisma/client";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { laDbCucBo, laTenDbTest } from "../../lib/security/url-db-cuc-bo";
+
+const DB_URL = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
+const isLocal = laDbCucBo(DB_URL) && laTenDbTest(DB_URL);
+const d = isLocal ? describe : describe.skip;
+if (!isLocal) console.warn(`[cham-cong/parttime-luoi-tuan] SKIP: DATABASE_URL không trỏ Postgres local satarobo_test`);
+
+const ctl = vi.hoisted(() => ({ dem: 0 }));
+vi.mock("../../lib/settings/service", async (importOriginal) => {
+  const goc = await importOriginal<typeof import("../../lib/settings/service")>();
+  return {
+    ...goc,
+    getSetting: (async (key: string, opts?: { orgUnitId?: string | null }) =>
+      /^shift\.parttime\w+Enabled$/.test(key) ? true : goc.getSetting(key as never, opts)) as typeof goc.getSetting,
+  };
+});
+vi.mock("../../lib/parttime/cong-tac-doc", async (o) => ({ ...(await o<typeof import("../../lib/parttime/cong-tac-doc")>()), rbacV2ChoParttime: () => true }));
+vi.mock("../../lib/db", async (importOriginal) => {
+  const goc = await importOriginal<typeof import("../../lib/db")>();
+  const dem = (goc.db as unknown as { $extends: (x: unknown) => unknown }).$extends({
+    query: { $allModels: { async $allOperations({ args, query }: { args: unknown; query: (a: unknown) => Promise<unknown> }) { ctl.dem++; return query(args); } } },
+  });
+  return { ...goc, db: dem };
+});
+
+const TAG = "ptlt";
+const vn = (ymd: string, hhmm: string) => new Date(`${ymd}T${hhmm}:00+07:00`);
+// Tuần T2 02/11 → CN 08/11/2026 (SR.QD.238 hiệu lực từ 15/10).
+const T2 = "2026-11-02";
+const CN = "2026-11-08";
+const T7 = "2026-11-07";
+
+d("[LT-DB] lưới phân công GV — Postgres thật", () => {
+  const db = new PrismaClient({ datasourceUrl: DB_URL });
+  let dongBo: typeof import("../../lib/parttime/dong-bo");
+  let luoi: typeof import("../../lib/parttime/luoi-tuan-db");
+  let truc: typeof import("../../lib/parttime/truc-van-hanh-db");
+  let cs = "";
+  let csKhac = "";
+  let gv = "";
+  let gv2 = "";
+  let khoa = "";
+  let bai = "";
+  const actor = { id: null as string | null, name: "QLCS lt" };
+
+  async function damBaoChinhSach() {
+    const sql = readFileSync(resolve(process.cwd(), "prisma/migrations/20261026090000_cong_parttime_nen/migration.sql"), "utf8");
+    const m = /'(\{"loai":"SR_QD_238".*?\})'::jsonb/.exec(sql);
+    if (!m) throw new Error("không thấy paramsJson SR.QD.238 trong migration");
+    await db.compensationPolicyVersion.upsert({
+      where: { code: "LEGACY" },
+      update: {},
+      create: { id: "cpv_legacy_truoc_15_10_2026", code: "LEGACY", name: "Cách tính cũ", documentNo: "SR.QD.230", appliesTo: "PARTTIME", effectiveFrom: new Date("2000-01-01T00:00:00Z"), effectiveTo: new Date("2026-10-14T00:00:00Z"), paramsJson: { loai: "LEGACY" } },
+    });
+    await db.compensationPolicyVersion.upsert({
+      where: { code: "SR.QD.238" },
+      update: {},
+      create: { id: "cpv_sr_qd_238", code: "SR.QD.238", name: "SR.QD.238", documentNo: "SR.QD.238", appliesTo: "PARTTIME", effectiveFrom: new Date("2026-10-15T00:00:00Z"), paramsJson: JSON.parse(m[1]) },
+    });
+  }
+
+  async function cleanup() {
+    await db.domainEvent.deleteMany({ where: { type: "parttime.staffing_dirty" } });
+    const ids = (await db.user.findMany({ where: { email: { endsWith: `@${TAG}.test` } }, select: { id: true } })).map((u) => u.id);
+    const pcIds = (await db.sessionStaffAssignment.findMany({ where: { userId: { in: ids } }, select: { id: true } })).map((p) => p.id);
+    const dutyIds = (await db.operationsDutyAssignment.findMany({ where: { userId: { in: ids } }, select: { id: true } })).map((x) => x.id);
+    await db.auditLog.deleteMany({ where: { entityType: { in: ["SessionStaffAssignment", "OperationsDutyAssignment"] }, entityId: { in: [...pcIds, ...dutyIds] } } });
+    if (pcIds.length) {
+      await db.$transaction([
+        db.$executeRaw`ALTER TABLE "StaffAssignmentAcceptance" DISABLE TRIGGER "StaffAssignmentAcceptance_bat_bien"`,
+        db.staffAssignmentAcceptance.deleteMany({ where: { assignmentId: { in: pcIds } } }),
+        db.$executeRaw`ALTER TABLE "StaffAssignmentAcceptance" ENABLE TRIGGER "StaffAssignmentAcceptance_bat_bien"`,
+      ]);
+    }
+    await db.sessionStaffAssignment.deleteMany({ where: { userId: { in: ids } } });
+    await db.operationsDutyAcceptance.deleteMany({ where: { duty: { userId: { in: ids } } } });
+    await db.operationsDutyAssignment.deleteMany({ where: { userId: { in: ids } } });
+    const cls = (await db.class.findMany({ where: { name: { startsWith: TAG } }, select: { id: true } })).map((c) => c.id);
+    await db.classSession.deleteMany({ where: { classId: { in: cls } } });
+    await db.class.deleteMany({ where: { id: { in: cls } } });
+    await db.teacherRankHistory.deleteMany({ where: { userId: { in: ids } } });
+    await db.lesson.deleteMany({ where: { curriculum: { course: { slug: { startsWith: TAG } } } } });
+    await db.curriculum.deleteMany({ where: { course: { slug: { startsWith: TAG } } } });
+    await db.course.deleteMany({ where: { slug: { startsWith: TAG } } });
+    await db.user.deleteMany({ where: { id: { in: ids } } });
+  }
+
+  beforeAll(async () => {
+    await damBaoChinhSach();
+    dongBo = await import("../../lib/parttime/dong-bo");
+    luoi = await import("../../lib/parttime/luoi-tuan-db");
+    truc = await import("../../lib/parttime/truc-van-hanh-db");
+    const tao = async (code: string) => {
+      const c = (await db.center.upsert({ where: { slug: `${TAG}-${code}` }, update: {}, create: { slug: `${TAG}-${code}`, name: `CS ${code}`, address: "x", code: `${TAG}-${code}` }, select: { id: true } })).id;
+      await db.orgUnit.upsert({ where: { code: `${TAG}-${code}` }, update: {}, create: { type: "CENTER", code: `${TAG}-${code}`, name: `ĐV ${code}`, path: `/${TAG}-${code}/`, depth: 0, centerId: c } });
+      return c;
+    };
+    cs = await tao("cs2");
+    csKhac = await tao("cs1");
+    await cleanup();
+    gv = (await db.user.create({ data: { email: `gv@${TAG}.test`, name: "GV A lt", role: "TEACHER", roles: ["TEACHER"], password: "x", centerId: cs }, select: { id: true } })).id;
+    gv2 = (await db.user.create({ data: { email: `gv2@${TAG}.test`, name: "GV B lt (CS1)", role: "TEACHER", roles: ["TEACHER"], password: "x", centerId: csKhac }, select: { id: true } })).id;
+    khoa = (await db.course.create({ data: { name: "Sata 4 lt", slug: `${TAG}-k` }, select: { id: true } })).id;
+    const cur = await db.curriculum.create({ data: { courseId: khoa, name: "GT lt" }, select: { id: true } });
+    bai = (await db.lesson.create({ data: { curriculumId: cur.id, order: 1, title: "Bài 1" }, select: { id: true } })).id;
+  });
+
+  afterAll(async () => {
+    await cleanup();
+    await db.orgUnit.deleteMany({ where: { code: { startsWith: `${TAG}-` } } });
+    await db.center.deleteMany({ where: { slug: { startsWith: `${TAG}-` } } });
+    await db.$disconnect();
+  });
+
+  let soLop = 0;
+  /** Lớp 18:00–19:30 của `nguoi` ở `centerId`, một buổi ngày `ymd` — phân công dựng bằng CHÍNH bộ đồng bộ. */
+  const buoi = async (p: { ymd?: string; nguoi?: string; centerId?: string; gio?: [string, string] } = {}) => {
+    const ymd = p.ymd ?? T7;
+    const [bat, ket] = p.gio ?? ["18:00", "19:30"];
+    soLop++;
+    const lop = await db.class.create({ data: { name: `${TAG} L${soLop}`, courseId: khoa, centerId: p.centerId ?? cs, teacherId: p.nguoi ?? gv, startTime: bat, endTime: ket }, select: { id: true } });
+    const s = await db.classSession.create({ data: { classId: lop.id, centerId: p.centerId ?? cs, status: "SCHEDULED", date: vn(ymd, bat), lessonId: bai }, select: { id: true } });
+    await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: s.id }], "TAO_BUOI", actor);
+    return { sessionId: s.id, classId: lop.id };
+  };
+  const giao = async (shiftCode: string, ymd = T7, userId = gv) => {
+    const r = await db.$transaction((tx) => truc.giaoTruc(tx, { userId, centerId: cs, ngay: ymd, shiftCode, note: null, actor }));
+    if (!r.ok) throw new Error(r.loi);
+    return r.id;
+  };
+  const doc = () => luoi.docLuoiTuan({ centerId: cs, tu: T2, den: CN, now: vn("2026-11-09", "09:00") });
+  const o = async (ngay = T7, ca = "T", userId = gv) => (await doc()).dong.find((x) => x.userId === userId)?.o[ngay]?.[ca] ?? null;
+
+  it("[LT-DB-01] EV-01 lớp cố định: tạo buổi ⇒ bộ đồng bộ phân MAIN ⇒ ô T7·T = D, 120.000 (R1 mặc định)", async () => {
+    const b = await buoi();
+    const x = await o();
+    expect(x?.ke).toMatchObject({ ma: "D", tong: 120000 });
+    expect(x?.hoatDong[0]).toMatchObject({ sourceId: b.sessionId, loai: "REGULAR", vai: "MAIN" });
+    // Đối chứng âm cho LT-DB-04: một buổi, không gì trùng ⇒ KHÔNG được báo trùng giờ / bận nơi khác (bắt lỗi đọc nhầm chính cơ sở này).
+    expect(x?.canhBao).not.toContain("TRUNG_GIO");
+    expect(x?.canhBao).not.toContain("O_CO_SO_KHAC");
+    await db.classSession.update({ where: { id: b.sessionId }, data: { status: "CANCELLED" } });
+    await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: b.sessionId }], "HUY_BUOI", actor);
+  });
+
+  it("[LT-DB-02] buổi + giao trực cùng ca ⇒ TD 165.000; huỷ buổi ⇒ T (trực GIỮ NGUYÊN); huỷ trực ⇒ ô trống", async () => {
+    const b = await buoi();
+    const dutyId = await giao("T");
+    expect((await o())?.ke).toMatchObject({ ma: "TD", tong: 165000 });
+    await db.classSession.update({ where: { id: b.sessionId }, data: { status: "CANCELLED" } });
+    await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: b.sessionId }], "HUY_BUOI", actor);
+    expect((await o())?.ke).toMatchObject({ ma: "T", tong: 90000 });
+    await db.$transaction((tx) => truc.huyTruc(tx, { dutyId, lyDo: "test", actor }));
+    expect(await o()).toBeNull(); // không còn việc nào ⇒ GV không còn dòng
+  });
+
+  it("[LT-DB-03] EV-11 dời buổi T7 tối → CN sáng: ô cũ trống, ô mới D — bộ đồng bộ sửa tại chỗ, không nhân đôi", async () => {
+    const b = await buoi();
+    await db.classSession.update({ where: { id: b.sessionId }, data: { date: vn(CN, "09:45") } });
+    await db.class.update({ where: { id: b.classId }, data: { startTime: "09:45", endTime: "11:15" } });
+    await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: b.sessionId }], "DOI_LICH_BUOI", actor);
+    const l = await doc();
+    const dong = l.dong.find((x) => x.userId === gv)!;
+    expect(dong.o[T7]!["T"]!.hoatDong.filter((h) => h.sourceId === b.sessionId)).toHaveLength(0);
+    expect(dong.o[CN]!["S"]!.hoatDong.filter((h) => h.sourceId === b.sessionId)).toHaveLength(1);
+    expect(await db.sessionStaffAssignment.count({ where: { sourceId: b.sessionId, status: { notIn: ["CANCELLED", "REPLACED"] } } })).toBe(1);
+    await db.classSession.update({ where: { id: b.sessionId }, data: { status: "CANCELLED" } });
+    await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: b.sessionId }], "HUY_BUOI", actor);
+  });
+
+  it("[LT-DB-04] EV-16 GV cơ sở khác được phân buổi ở cơ sở này ⇒ laMuon, cơ sở gốc không đổi; EV-15 trùng giờ ở CS1 ⇒ cảnh báo", async () => {
+    const b = await buoi({ nguoi: gv2 });
+    const bKhac = await buoi({ nguoi: gv2, centerId: csKhac, gio: ["19:00", "20:30"] });
+    const l = await doc();
+    const dong = l.dong.find((x) => x.userId === gv2)!;
+    expect(dong).toMatchObject({ laMuon: true });
+    expect(dong.o[T7]!["T"]!.canhBao).toEqual(expect.arrayContaining(["TRUNG_GIO", "O_CO_SO_KHAC"]));
+    expect((await db.user.findUniqueOrThrow({ where: { id: gv2 }, select: { centerId: true } })).centerId).toBe(csKhac);
+    for (const x of [b, bKhac]) {
+      await db.classSession.update({ where: { id: x.sessionId }, data: { status: "CANCELLED" } });
+      await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: x.sessionId }], "HUY_BUOI", actor);
+    }
+  });
+
+  it("[LT-DB-05] Rank theo ngày hiệu lực: R3 từ CN ⇒ buổi T7 120.000, buổi CN 160.000", async () => {
+    const b1 = await buoi();
+    const b2 = await buoi({ ymd: CN });
+    await db.teacherRankHistory.create({ data: { userId: gv, rank: 3, effectiveFrom: new Date(`${CN}T00:00:00Z`), reason: "test" } });
+    expect((await o())?.ke?.tong).toBe(120000);
+    expect((await o(CN))?.ke?.tong).toBe(160000);
+    await db.teacherRankHistory.deleteMany({ where: { userId: gv } });
+    for (const x of [b1, b2]) {
+      await db.classSession.update({ where: { id: x.sessionId }, data: { status: "CANCELLED" } });
+      await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: x.sessionId }], "HUY_BUOI", actor);
+    }
+  });
+
+  it("[LT-DB-Q] số câu tra của docLuoiTuan KHÔNG đổi theo số buổi (2 vs 12)", async () => {
+    const dem = async () => {
+      ctl.dem = 0;
+      await doc();
+      return ctl.dem;
+    };
+    const tao = [await buoi(), await buoi({ ymd: CN })];
+    const it2 = await dem();
+    for (let i = 0; i < 10; i++) tao.push(await buoi({ ymd: "2026-11-0" + (2 + (i % 5)), gio: ["09:45", "11:15"] }));
+    expect(await dem()).toBe(it2);
+    for (const x of tao) {
+      await db.classSession.update({ where: { id: x.sessionId }, data: { status: "CANCELLED" } });
+      await dongBo.dongBoNgay([{ sourceType: "CLASS_SESSION", sourceId: x.sessionId }], "HUY_BUOI", actor);
+    }
+  });
+});
