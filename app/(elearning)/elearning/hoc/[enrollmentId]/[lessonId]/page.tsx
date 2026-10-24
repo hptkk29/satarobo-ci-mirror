@@ -1,0 +1,406 @@
+import Link from "next/link";
+import { auth } from "@/lib/auth";
+import { resolveActor } from "@/lib/auth/actor";
+import { scopedDb } from "@/lib/db-scope";
+import { MarkdownRenderer } from "@/components/blog/markdown-renderer";
+import { checkContentAccess } from "@/lib/elearning/content-gate";
+import { getPolicyAcceptance } from "@/lib/elearning/policy-acceptance";
+import { demoteH1 } from "@/lib/elearning/reading";
+import { ReadingTracker } from "../../_components/reading-tracker";
+import { VideoPlayer } from "../../_components/video-player";
+import { kyVeMedia } from "@/lib/elearning/media-ticket";
+import { TOC_DO_TOI_DA } from "@/lib/elearning/video-heartbeat-contract";
+import { nenNopBai } from "@/lib/elearning/task-view";
+import { TaskSubmitter } from "../../_components/task-submitter";
+import { vaySaoChuaMo } from "@/lib/elearning/lesson-kind";
+import { ExamRunner } from "../../_components/exam-runner";
+import { nenLamBai } from "@/lib/elearning/exam-view";
+import { isElearningVideoEnabled } from "@/lib/flags";
+import { napCayBaiHoc } from "@/lib/elearning/lesson-tree";
+import { NHAN_LOAI_BAI } from "@/lib/elearning/lesson-kind";
+import { KhungBaiHoc } from "../../_components/khung-bai-hoc";
+
+/**
+ * EL-04 — TRANG ĐỌC MỘT BÀI.
+ *
+ * ⚠️ Trang này KHÔNG trả một byte nội dung nào trước khi qua đủ chuỗi cổng ở
+ * server. Lọc ở client là trang trí: nội dung đã nằm trong HTML thì mở DevTools
+ * là đọc được, không cần lý do, không để lại dòng audit nào.
+ */
+export const dynamic = "force-dynamic";
+
+export const metadata = {
+  title: "Học bài | Sata Robo",
+  robots: { index: false, follow: false },
+};
+
+/** Màn từ chối dùng chung — cùng một hình dạng cho mọi lý do. */
+/**
+ * Màn từ chối — và khi lời từ chối CHỈ ĐƯỜNG thì phải kèm luôn đường đó.
+ *
+ * ⚠️ `di` không phải phần trang trí. Bản trước viết "Vào mục Dữ liệu của tôi để…
+ * rồi xác nhận" mà trang chỉ có đúng một nút về trang chủ: người học mới được giao
+ * khoá bị chặn ở MỌI bài, đọc một câu bảo đi đâu đó, và tự đi tìm. Thanh điều hướng
+ * của người học thuần cũng không có mục ấy.
+ *
+ * E2E `vong-hoc.spec.ts` chết ngay ca đầu vì chuyện này — không một test đơn vị nào
+ * trong 6009 test thấy, vì chúng kiểm hàm chứ không đi hết một vòng.
+ */
+function TuChoi({
+  title,
+  detail,
+  di,
+}: {
+  title: string;
+  detail: string;
+  di?: { href: string; nhan: string };
+}) {
+  return (
+    <div className="mx-auto max-w-lg px-4 py-16 text-center">
+      <h1 className="text-xl font-bold">{title}</h1>
+      <p className="mt-3 text-sm text-muted-foreground">{detail}</p>
+      {di ? (
+        <Link
+          href={di.href}
+          className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground"
+        >
+          {di.nhan}
+        </Link>
+      ) : null}
+      <Link
+        href="/"
+        className="mt-6 ml-2 inline-block rounded-lg border border-border px-4 py-2 text-sm"
+      >
+        Về trang chủ khu đào tạo
+      </Link>
+    </div>
+  );
+}
+
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ enrollmentId: string; lessonId: string }>;
+}) {
+  const { enrollmentId, lessonId } = await params;
+  const session = await auth();
+  // Layout của khu đã gác đăng nhập; đây là lớp thứ hai, cố ý không tin lớp trên.
+  if (!session?.user?.id) {
+    return <TuChoi title="Chưa đăng nhập" detail="Đăng nhập rồi mở lại trang này." />;
+  }
+  const actor = await resolveActor(session.user.id);
+  // Đi qua `scopedDb`, không `@/lib/db` trần — ESLint chặn ở route group này, và
+  // chặn đúng: `TrnEnrollment` và `TrnCourse` đều ∈ SCOPED_MODELS nên đọc trần là
+  // bỏ qua cách ly cơ sở. `TrnLessonProgress` không có cột đơn vị nên đi qua
+  // nguyên vẹn — cách ly của nó đến từ `enrollmentId` đã lọc ở trên.
+  const db = scopedDb(actor);
+
+  // ── Sở hữu: khoá theo CHÍNH userId, không tin id trên URL ──────────────────
+  const enrollment = await db.trnEnrollment.findFirst({
+    where: { id: enrollmentId, userId: session.user.id },
+    select: {
+      id: true,
+      courseId: true,
+      status: true,
+      // Hai cột của lượt giao quyết định cách trình phát cư xử. Đọc ở đây thay vì
+      // để trình phát tự đoán: đoán mặc định "cho tua" là vô hiệu hoá cơ chế cho
+      // mọi lượt giao mà không ai thấy.
+      assignment: { select: { blockSeek: true, maxPlaybackRate: true } },
+    },
+  });
+  // "Không tồn tại" và "không phải của mình" trả CÙNG một màn: phân biệt là nói
+  // cho người dò biết id nào có thật.
+  if (!enrollment || enrollment.status === "REVOKED") {
+    return (
+      <TuChoi
+        title="Không tìm thấy bài học"
+        detail="Lượt học này không tồn tại hoặc không thuộc về bạn."
+      />
+    );
+  }
+
+  // ── Bài phải thuộc khoá của lượt này ──────────────────────────────────────
+  const lesson = await db.trnLesson.findFirst({
+    where: {
+      id: lessonId,
+      deletedAt: null,
+      module: { courseId: enrollment.courseId },
+    },
+    select: {
+      id: true,
+      title: true,
+      kind: true,
+      contentMd: true,
+      minReadSeconds: true,
+      videoKey: true,
+      examId: true,
+      // ⚠️ Thiếu trường này thì nhánh `TASK` đọc `undefined` và mọi bài tập rơi
+      // vào nhánh "chưa gắn khung" — im lặng, cho cả những bài đã gắn.
+      rubricId: true,
+      captionKey: true,
+      durationSec: true,
+      module: { select: { title: true, course: { select: { title: true } } } },
+    },
+  });
+  if (!lesson) {
+    return (
+      <TuChoi
+        title="Không tìm thấy bài học"
+        detail="Lượt học này không tồn tại hoặc không thuộc về bạn."
+      />
+    );
+  }
+
+  // ── Cổng nội dung ─────────────────────────────────────────────────────────
+  const course = await db.trnCourse.findUnique({
+    where: { id: enrollment.courseId },
+    select: {
+      id: true,
+      visibility: true,
+      selfEnrollEnabled: true,
+      securityLevel: true,
+      versions: { where: { status: "PUBLISHED" }, select: { id: true }, take: 1 },
+    },
+  });
+  const tuChoi =
+    course == null
+      ? { code: "NOT_FOUND", message: "Không tìm thấy khoá học" }
+      : checkContentAccess({
+          actor,
+          course: {
+            id: course.id,
+            visibility: course.visibility,
+            selfEnrollEnabled: course.selfEnrollEnabled,
+            securityLevel: course.securityLevel,
+            hasPublishedVersion: course.versions.length > 0,
+          },
+          hasEnrollment: true,
+        });
+  if (tuChoi) {
+    return <TuChoi title="Chưa mở được bài này" detail={tuChoi.message} />;
+  }
+
+  // ── Chính sách: chưa xác nhận thì KHÔNG hiện nội dung ─────────────────────
+  // Cổng đường GHI đã có ở service, nhưng nếu vẫn hiện nội dung ở đây thì người
+  // chưa đồng ý vẫn đọc được — chỉ là không được ghi nhận. Đó là thu nửa vời:
+  // họ mất công đọc mà hệ thống coi như chưa học.
+  const policy = await getPolicyAcceptance(session.user.id);
+  if (!policy.accepted) {
+    return (
+      <TuChoi
+        title="Cần xác nhận trước khi bắt đầu"
+        detail="Xem hệ thống ghi nhận những gì trong lúc bạn học, rồi xác nhận. Xong là quay lại học ngay được."
+        di={{
+          href: "/elearning/du-lieu-cua-toi",
+          nhan: "Xem và xác nhận",
+        }}
+      />
+    );
+  }
+
+  // ── Khung trình học (cột trái cây chương/bài + Bài trước/sau) ─────────────────
+  // Đứng SAU mọi cổng ở trên và chỉ BỌC phần nội dung: không đụng điều kiện hoàn thành, heartbeat hay vé phát. Hai truy
+  // vấn của cây chỉ chạy khi bài thật sự được hiển thị (màn từ chối không đi qua khung).
+  const dungKhung = async (noiDung: React.ReactNode, tuyChon?: { anChuyenBai?: boolean }) => {
+    const cay = await napCayBaiHoc(db, {
+      enrollmentId: enrollment.id,
+      courseId: enrollment.courseId,
+    });
+    return (
+      <KhungBaiHoc
+        enrollmentId={enrollment.id}
+        tenKhoa={lesson.module.course.title}
+        tenChuong={lesson.module.title}
+        tieuDe={lesson.title}
+        nhanLoai={NHAN_LOAI_BAI[lesson.kind] ?? lesson.kind}
+        lessonId={lesson.id}
+        cay={cay}
+        anChuyenBai={tuyChon?.anChuyenBai ?? false}
+      >
+        {noiDung}
+      </KhungBaiHoc>
+    );
+  };
+
+  // ── Bài VIDEO (EL-11) ─────────────────────────────────────────────────────
+  if (lesson.kind === "VIDEO") {
+    // Cờ RIÊNG của mảng phát + đo xem (đặc tả §4.8). OFF ⇒ KHÔNG ký vé phát và KHÔNG dựng bộ đo —
+    // nói thẳng "đang tạm tắt" thay vì khung phát rỗng. Cờ chung vẫn ON: các bài khác học bình thường.
+    if (!isElearningVideoEnabled()) {
+      return (
+        <TuChoi
+          title="Xem video đang tạm tắt"
+          detail="Phòng Đào tạo đã tạm dừng phần xem video. Các bài khác của khoá vẫn học bình thường; quay lại sau khi được thông báo."
+        />
+      );
+    }
+    if (!lesson.videoKey || !lesson.durationSec) {
+      // Bài khai là video mà chưa có tệp: nói thẳng thay vì hiện khung phát rỗng
+      // rồi để người học tưởng máy mình hỏng.
+      return (
+        <TuChoi
+          title="Bài này chưa có video"
+          detail="Người soạn chưa tải tệp lên. Báo với Đào tạo để họ hoàn thiện bài."
+        />
+      );
+    }
+
+    const tienDo = await db.trnLessonProgress.findUnique({
+      where: { enrollmentId_lessonId: { enrollmentId: enrollment.id, lessonId: lesson.id } },
+      select: { coveredSec: true, maxPositionSec: true },
+    });
+
+    // ⚠️ Vé phát ký ở ĐÂY và chỉ ở đây. Đây là chỗ duy nhất đã đi qua trọn chuỗi
+    // cổng (sở hữu → chính sách → cổng nội dung), nên nó là chỗ duy nhất đủ tư
+    // cách nói "người này được xem bài này". Ký ở một API riêng nghĩa là dựng lại
+    // cả chuỗi cổng đó lần thứ hai, và bản thứ hai sẽ lệch.
+    const ve = kyVeMedia({ lessonId: lesson.id, userId: session.user.id });
+
+    return dungKhung(
+      <VideoPlayer
+        enrollmentId={enrollment.id}
+        lessonId={lesson.id}
+        videoKey={lesson.videoKey}
+        captionKey={lesson.captionKey}
+        ve={ve}
+        // Nhãn hình mờ mang ĐỊNH DANH người xem. Mục đích không phải chặn quay
+        // màn hình — không cơ chế web nào chặn được — mà là làm bản quay lộ ra
+        // ai đã quay.
+        nhanMo={`${session.user.name ?? ""} · ${session.user.email ?? ""}`}
+        durationSec={lesson.durationSec}
+        coveredSecBanDau={tienDo?.coveredSec ?? 0}
+        maxPositionSecBanDau={tienDo?.maxPositionSec ?? 0}
+        chanTua={enrollment.assignment?.blockSeek ?? true}
+        tocDoToiDa={enrollment.assignment?.maxPlaybackRate ?? TOC_DO_TOI_DA}
+      />,
+    );
+  }
+
+  // ── Bài KIỂM TRA (EL-14d) ─────────────────────────────────────────────────
+  if (lesson.kind === "QUIZ") {
+    if (!lesson.examId) {
+      return (
+        <TuChoi
+          title="Bài kiểm tra chưa có đề"
+          detail="Người soạn chưa gắn đề cho bài này. Báo với Đào tạo để họ hoàn thiện."
+        />
+      );
+    }
+    const nen = await nenLamBai({
+      db,
+      userId: session.user.id,
+      enrollmentId: enrollment.id,
+      examId: lesson.examId,
+    });
+    if (!nen) {
+      return (
+        <TuChoi
+          title="Chưa mở được bài kiểm tra"
+          detail="Đề chưa được kích hoạt. Báo với Đào tạo."
+        />
+      );
+    }
+
+    return dungKhung(
+      <ExamRunner
+        enrollmentId={enrollment.id}
+        lessonId={lesson.id}
+        tenDe={nen.tenDe}
+        durationMin={nen.durationMin}
+        passScore={nen.passScore}
+        maxScore={nen.maxScore}
+        soLuotConLai={nen.soLuotConLai}
+        luotDangLam={nen.luotDangLam}
+        ketQuaGanNhat={nen.ketQuaGanNhat}
+      />,
+      // Đang có lượt thi DỞ ⇒ không vẽ Bài trước/Bài sau ngay dưới bài thi (bấm nhầm là rời lượt đang tính giờ). Người học vẫn
+      // rời được bằng cây bên trái / đề cương; lượt thi vẫn chạy theo giờ máy chủ như trước.
+      { anChuyenBai: nen.luotDangLam != null },
+    );
+  }
+
+  if (lesson.kind === "LIVE_SESSION") {
+    // Buổi trực tiếp KHÔNG có gì để người học bấm: điểm danh do giảng viên tick
+    // (`lib/elearning/equivalence.ts`). Nói rõ, thay vì để họ tưởng bài hỏng.
+    return (
+      <TuChoi
+        title="Buổi học trực tiếp"
+        detail="Bài này ghi nhận bằng điểm danh của giảng viên, không có nội dung để xem ở đây. Đề cương khoá hiện bạn đã được điểm danh hay chưa."
+        di={{
+          href: `/elearning/hoc/${enrollmentId}`,
+          nhan: "Về đề cương khoá",
+        }}
+      />
+    );
+  }
+
+  if (lesson.kind === "TASK") {
+    if (!lesson.rubricId) {
+      return (
+        <TuChoi
+          title="Bài tập chưa có khung chấm"
+          detail="Người soạn chưa gắn khung chấm cho bài này. Báo với Đào tạo để họ hoàn thiện."
+        />
+      );
+    }
+    const nen = await nenNopBai({
+      db,
+      userId: session.user.id,
+      lessonId: lesson.id,
+      rubricId: lesson.rubricId,
+    });
+    if (!nen) {
+      return (
+        <TuChoi
+          title="Chưa mở được bài tập"
+          detail="Không đọc được khung chấm của bài này. Báo với Đào tạo."
+        />
+      );
+    }
+
+    return dungKhung(
+      <>
+        {lesson.contentMd ? (
+          <p className="mb-4 whitespace-pre-wrap rounded-md border p-3 text-sm">
+            {lesson.contentMd}
+          </p>
+        ) : null}
+        <TaskSubmitter
+          enrollmentId={enrollment.id}
+          lessonId={lesson.id}
+          nen={nen}
+        />
+      </>,
+    );
+  }
+
+  if (lesson.kind !== "READ") {
+    // Nói RÕ loại nào và chờ ticket nào — câu chung chung làm người học tưởng máy
+    // mình hỏng và đi báo sai chỗ.
+    return <TuChoi title="Loại bài này chưa mở" detail={vaySaoChuaMo(lesson.kind)} />;
+  }
+
+  const progress = await db.trnLessonProgress.findUnique({
+    where: { enrollmentId_lessonId: { enrollmentId: enrollment.id, lessonId: lesson.id } },
+    select: { readSeconds: true, scrollMaxPct: true, verifiedAt: true },
+  });
+
+  // `<h1>` của trang (trong `KhungBaiHoc`) là TÊN BÀI. Vì thế nội dung bên dưới hạ `#` xuống `##` — vừa giữ đúng
+  // thứ bậc tiêu đề cho trình đọc màn hình, vừa tránh bị `h1: () => null` của renderer chung nuốt mất.
+  return dungKhung(
+    <>
+      <div>
+        <MarkdownRenderer content={demoteH1(lesson.contentMd ?? "")} />
+      </div>
+
+      <ReadingTracker
+        enrollmentId={enrollment.id}
+        lessonId={lesson.id}
+        readSecondsBanDau={progress?.readSeconds ?? 0}
+        scrollMaxPctBanDau={progress?.scrollMaxPct ?? 0}
+        minReadSeconds={lesson.minReadSeconds}
+        daXong={progress?.verifiedAt != null}
+      />
+    </>,
+  );
+}
