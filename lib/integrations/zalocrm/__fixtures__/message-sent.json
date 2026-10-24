@@ -1,0 +1,24 @@
+{
+  "event": "message.sent",
+  "orgCode": "cs1",
+  "timestamp": "2026-09-06T02:05:00.000Z",
+  "data": {
+    "messageId": "zc-msg-1002",
+    "conversationId": "zc-conv-77",
+    "zaloAccountId": "zc-acc-01",
+    "threadId": "1234567890123456789",
+    "threadType": "user",
+    "senderUid": "9999999999999999999",
+    "senderName": "Sata Robo CS1",
+    "sentByExternalId": "usr-sale-cs1",
+    "contactId": "zc-ct-9",
+    "contact": {
+      "id": "zc-ct-9",
+      "fullName": "Chị Lan",
+      "phone": "0912345678"
+    },
+    "content": "Dạ bé 8 tuổi học lớp Sata 2 ạ.",
+    "contentType": "text",
+    "sentAt": "2026-09-06T02:05:00.000Z"
+  }
+}
