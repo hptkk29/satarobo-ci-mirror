@@ -1,0 +1,11 @@
+-- "Thu học phí theo phạm vi học" — PR5 (13/10/2026), quyết định 5 của chủ dự án ("CHỈ KHI VƯỢT TRẦN"). CHỈ THÊM MỘT GIÁ TRỊ ENUM.
+--
+--   CHO_DUYET_HOC_VUOT — gói trọn vào lớp đã dạy quá trần học vượt (OVER_CAP_SKIPPED): máy ĐÃ giữ N bài GẦN NHẤT (KEEP_LATEST) và bỏ bài cũ;
+--   dòng này xin Giám đốc/Admin (`entitlements:approve-exception`) duyệt học vượt THÊM phần vượt trần. `payload` ghi số bài cần, trần, bài bị bỏ,
+--   bài đề xuất thêm. Không duyệt thì kết quả của máy vẫn đứng — dòng này KHÔNG chặn xếp lớp.
+--
+-- Vì sao loại MỚI: khoá duy nhất là (orderItemId, loai) và "cap-tu-don.ts" / "xep-lop-tu-don.ts" đóng các loại cũ mỗi lượt chạy theo điều kiện RIÊNG của chúng;
+-- mượn loại cũ là bị đóng nhầm ở lượt hích kế tiếp (cùng lý do "20261021100000_quyen_hoc_xu_ly_cho_xep_lop").
+--
+-- ADDITIVE, chạy lại được (IF NOT EXISTS). Giá trị mới chưa dùng được trong cùng giao dịch — migration này KHÔNG dùng nó, không backfill, không UPDATE/DELETE.
+ALTER TYPE "EntitlementXuLyLoai" ADD VALUE IF NOT EXISTS 'CHO_DUYET_HOC_VUOT';
