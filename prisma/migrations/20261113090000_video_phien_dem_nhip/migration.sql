@@ -1,0 +1,14 @@
+-- Đếm nhịp xem THEO PHIÊN — nguồn của luật HEARTBEAT_FLOOD (nhịp dày bất thường).
+--
+-- Trước: `watch-flag-scan` lấy `TrnLessonProgress.seq` (số nhịp LUỸ KẾ của cả đời bài) và chỉ dùng khi phiên đang xét là phiên ĐẦU
+-- TIÊN của bài (mốc mở phiên ≈ `firstStartedAt`). Phiên thứ hai trở đi: null ⇒ luật im lặng bỏ qua. Đặt lại tiến độ khi bài đổi nguồn
+-- (B2) còn xoá `firstStartedAt` ⇒ đúng nhóm người bị bắt đầu lại không bao giờ bị luật này xét.
+--
+-- Nay mỗi nhịp đã nhận cộng 1 vào `TrnVideoSession.soNhip` ngay trong giao dịch ghi nhịp. Luật so `soNhip` với `wallSec / chuKy × 3`.
+--
+-- ADDITIVE, an toàn trên bảng đang có dữ liệu:
+--   · NOT NULL DEFAULT 0 — PostgreSQL ≥ 11 thêm cột có DEFAULT hằng KHÔNG viết lại bảng.
+--   · Phiên đã có mang 0 ⇒ mã rơi về cách cũ cho riêng các phiên đó (không báo cờ oan, không mất cờ vốn có).
+--   · Không backfill: không có nguồn nào để suy ra số nhịp của phiên cũ.
+-- Bảng đã bật RLS từ trước; thêm cột không đổi điều đó.
+ALTER TABLE "TrnVideoSession" ADD COLUMN IF NOT EXISTS "soNhip" INTEGER NOT NULL DEFAULT 0;

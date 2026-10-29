@@ -1,0 +1,57 @@
+{
+  "name": "intake-complete-accepted",
+  "description": "Đủ tên FB (từ Meta), SĐT, cơ sở ⇒ ACCEPTED. Agent chỉ nói lời cảm ơn chung chung.",
+  "validates": {
+    "request": "LeadIntakeRequest",
+    "requestExpect": "VALID",
+    "response": "LeadIntakeResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/lead-intakes",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "CONSULTATION_REQUEST:0224ef7dcf4473d0c11bc20b61adf3c413af349b:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "intent": "CONSULTATION_REQUEST",
+      "candidate": {
+        "phoneRaw": "0905 123 456",
+        "campusCode": "CS1"
+      },
+      "evidence": {
+        "phoneMessageMid": "m_TEST_phone_0001",
+        "campusMessageMid": "m_TEST_campus_0001"
+      },
+      "catalogVersion": 7,
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_a1b2c3d4e5f6a1",
+        "status": "ACCEPTED",
+        "nextAction": "ACKNOWLEDGE_GENERIC"
+      },
+      "meta": {
+        "requestId": "req_test00000010ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "CONSULTATION_REQUEST",
+    "seed": "m_TEST_0001",
+    "v": 1
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "handoff-system-unavailable",
+  "description": "Agent không thu thập tiếp được vì lý do hệ thống (ví dụ catalog quá hạn): reasonCode SYSTEM_UNAVAILABLE.",
+  "validates": {
+    "request": "HandoffRequest",
+    "requestExpect": "VALID",
+    "response": "HandoffResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/handoffs",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "HANDOFF:b7e4b35528112fafcf99b01b5bb0f2dc12ab9bd2:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "reasonCode": "SYSTEM_UNAVAILABLE",
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_h4d5e6f1a2b3c4",
+        "handoffStatus": "QUEUED",
+        "ownerMode": "HANDOFF_REQUESTED",
+        "nextAction": "SEND_HOLDING_MESSAGE"
+      },
+      "meta": {
+        "requestId": "req_test00000023ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "HANDOFF",
+    "seed": "SYSTEM_UNAVAILABLE|7000000000000001|2026-10-26T07",
+    "v": 1
+  }
+}
