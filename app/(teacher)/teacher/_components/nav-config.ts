@@ -1,0 +1,156 @@
+import {
+  Award,
+  BookOpenText,
+  Camera,
+  CalendarCheck,
+  CalendarDays,
+  ClipboardCheck,
+  ClipboardList,
+  Clock,
+  FileText,
+  GraduationCap,
+  LayoutDashboard,
+  MessageCircle,
+  QrCode,
+  Sparkles,
+  Users,
+  type LucideIcon,
+  RefreshCw,
+} from "lucide-react";
+
+export interface NavItem {
+  label: string;
+  href: string;
+  icon: LucideIcon;
+  /**
+   * Mục có badge số động. `"chat"` = tổng tin nhắn chưa đọc — số do layout (RSC) tính rồi
+   * truyền xuống, sidebar chỉ VẼ (cùng nguyên tắc "layout tính, nav vẽ" của admin).
+   */
+  badge?: "chat";
+  /**
+   * Mục của Công Parttime (SR.QD.238) — CHỈ vẽ khi layout tính được cơ sở liên quan của người dùng đang bật Parttime
+   * (`hienMucCongViecCuaToi`; chủ dự án chốt 19/10/2026 — MENU_HIDDEN_WHEN_DISABLED). `href` vẫn là literal ở đây (nav-coverage).
+   */
+  parttime?: true;
+}
+
+export interface NavGroup {
+  label: string;
+  /** Nhóm gập sẵn khi mở trang. */
+  collapsed?: boolean;
+  /** Hiển thị thẳng các mục, không bọc trong nhóm gập (vd: Tổng quan). */
+  standalone?: boolean;
+  items: NavItem[];
+}
+
+/**
+ * Điều hướng site giáo viên — cấu trúc 4 nhóm port từ TeachUI (`src/lib/nav.ts`),
+ * nhưng GIỮ NGUYÊN slug tiếng Việt `/teacher/*` của repo.
+ *
+ * Không đổi tên route ⇒ không phải sửa `proxy.ts`, `lib/auth/route-policy.ts`
+ * hay e2e test đang bám vào các path này.
+ *
+ * Trên host `giaovien.satarobo.vn`, proxy rewrite clean URL (`/lich` → `/teacher/lich`),
+ * nên `isNavItemActive()` phải khớp cả hai dạng path.
+ *
+ * "Đơn từ" của TeachUI CHƯA có (cần model mới — batch 2). "Danh sách Trial" đã có
+ * (model TrialClassV2 đủ) → thêm nhóm Trial.
+ */
+export const navGroups: NavGroup[] = [
+  {
+    label: "Tổng quan",
+    standalone: true,
+    items: [{ label: "Tổng quan", href: "/teacher", icon: LayoutDashboard }],
+  },
+  {
+    label: "Giảng dạy",
+    items: [
+      { label: "Lớp của tôi", href: "/teacher/lop", icon: Users },
+      { label: "Lịch làm việc", href: "/teacher/lich", icon: CalendarDays },
+      // SR.QD.238 P2 → P3b "Công việc của tôi" — buổi được phân (đứng chính / trợ giảng / dạy thay): hôm nay, sắp tới,
+      // chờ MÌNH tự nhận hoặc từ chối, đã qua, đối soát. Đường dẫn giữ `/teacher/phan-cong` (thông báo cũ trỏ vào đây).
+      { label: "Công việc của tôi", href: "/teacher/phan-cong", icon: ClipboardList, parttime: true },
+      // "Điểm danh" (/teacher/diem-danh) + "Nhận xét" (/teacher/nhan-xet) ĐÃ BỎ khỏi
+      // sidebar (07/08/2026) vì trùng tab trong hub "Lớp của tôi". Route + chức năng
+      // GIỮ NGUYÊN — vẫn vào được từ hub lớp, dashboard và trang Hướng dẫn.
+      // "Kho bài tập" ĐÃ BỎ khỏi sidebar (parity 18/08) — kho nằm trong tab
+      // "Kho bài tập của tôi" của trang Bài tập; route /teacher/kho-bai-tap GIỮ NGUYÊN.
+      { label: "Bài tập", href: "/teacher/cham-bai", icon: ClipboardCheck },
+      { label: "Tài liệu", href: "/teacher/tai-lieu", icon: BookOpenText },
+      // Sóng 3 Đợt 1 — chat với phụ huynh NGAY TRONG site GV (trước đây phải sang site
+      // admin mới nhắn được). Đặt trong "Giảng dạy" vì nhóm lớp bám lớp mình dạy.
+      // ⚠️ href PHẢI giữ tiền tố `/teacher`: clean URL `/tin-nhan` trên host giaovien
+      // trùng segment admin (`ADMIN_ROUTE_SEGMENTS` có "tin-nhan") nên bị decideRoute
+      // đá về trang chủ GV — cùng vết với `hoc-ba`/`don-tu` đã có.
+      {
+        label: "Tin nhắn",
+        href: "/teacher/tin-nhan",
+        icon: MessageCircle,
+        badge: "chat",
+      },
+    ],
+  },
+  {
+    label: "Trial",
+    items: [
+      { label: "Danh sách Trial", href: "/teacher/trial", icon: Sparkles },
+      // Học bù (29/09/2026) — buổi dạy bù được xếp cho mình: điểm danh, nhận xét, tài liệu.
+      { label: "Học bù", href: "/teacher/hoc-bu", icon: RefreshCw },
+    ],
+  },
+  {
+    label: "Học viên & Học bạ",
+    items: [
+      { label: "Học viên", href: "/teacher/hoc-vien", icon: GraduationCap },
+      { label: "Học bạ", href: "/teacher/hoc-ba", icon: BookOpenText },
+      { label: "Hoàn thành khoá", href: "/teacher/hoan-thanh", icon: Award },
+      { label: "Ảnh lớp", href: "/teacher/anh-lop", icon: Camera },
+    ],
+  },
+  {
+    label: "Ca & Chấm công",
+    items: [
+      // L0 chấm công (05/09/2026) — trang hướng dẫn quét QR; đích thật của mã QR là
+      // /teacher/cham-cong/checkin (segment `cham-cong` khai ở TEACHER_ROUTE_SEGMENTS).
+      { label: "Chấm công", href: "/teacher/cham-cong", icon: QrCode },
+      { label: "Bảng công", href: "/teacher/bang-cong", icon: Clock },
+      // SR.QD.238 P5d — tiết dạy / ca trực đã được QLCS xác nhận + khoản trừ ĐỀ XUẤT. KHÁC "Bảng công" ngay trên (công ngày theo ca,
+      // mọi nhân sự) và KHÔNG phải phiếu lương — hai trang tự nói điều đó. Trước 20/10/2026 chỉ vào được bằng một liên kết chữ trong
+      // "Công việc của tôi". Cùng cờ `parttime` với mục đó: cơ sở chưa bật thì cả hai cùng ẩn, và trang "Bảng công" giải thích vì sao.
+      { label: "Công tháng của tôi", href: "/teacher/phan-cong/thang", icon: CalendarCheck, parttime: true },
+      { label: "Đơn từ", href: "/teacher/don-tu", icon: FileText },
+    ],
+  },
+];
+
+/** Bỏ tiền tố `/teacher` để ra clean URL tương ứng ("/teacher" → "/"). */
+function cleanUrl(href: string): string {
+  return href === "/teacher" ? "/" : href.slice("/teacher".length);
+}
+
+/**
+ * Path hiện tại có thuộc mục này không — chấp nhận cả clean URL (host giaovien).
+ * Trang con vẫn sáng mục cha (vd `/teacher/lop/abc` → "Lớp của tôi"), TRỪ mục
+ * gốc `/teacher` (nếu không nó sáng ở mọi trang).
+ */
+export function isNavItemActive(pathname: string, href: string): boolean {
+  const clean = cleanUrl(href);
+  if (href === "/teacher") return pathname === "/teacher" || pathname === "/";
+  return (
+    pathname === href ||
+    pathname === clean ||
+    pathname.startsWith(`${href}/`) ||
+    pathname.startsWith(`${clean}/`)
+  );
+}
+
+/**
+ * Mục nào SÁNG — đúng MỘT mục: trong các mục khớp `isNavItemActive`, mục có đường dẫn DÀI NHẤT thắng. Thiếu bước này thì ở
+ * `/teacher/phan-cong/thang` cả "Công việc của tôi" (`/teacher/phan-cong`, khớp tiền tố) lẫn "Công tháng của tôi" cùng sáng — người
+ * dùng mở Công tháng mà menu vẫn chỉ vào màn cũ.
+ */
+export function mucDangMo(pathname: string, hrefs: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const h of hrefs) if (isNavItemActive(pathname, h) && (best === null || h.length > best.length)) best = h;
+  return best;
+}
