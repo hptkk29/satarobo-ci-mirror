@@ -1,0 +1,49 @@
+{
+  "name": "handoff-queued",
+  "description": "Khách xin gặp nhân viên ⇒ QUEUED, gửi tin chờ.",
+  "validates": {
+    "request": "HandoffRequest",
+    "requestExpect": "VALID",
+    "response": "HandoffResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/handoffs",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "HANDOFF:d81e7ea1cb5d6ec0fc65d1d31f2f5450f34485dc:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "reasonCode": "CUSTOMER_REQUESTED_HUMAN",
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_h1a2b3c4d5e6f1",
+        "handoffStatus": "QUEUED",
+        "ownerMode": "HANDOFF_REQUESTED",
+        "nextAction": "SEND_HOLDING_MESSAGE"
+      },
+      "meta": {
+        "requestId": "req_test00000020ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "HANDOFF",
+    "seed": "m_TEST_0101",
+    "v": 1
+  }
+}

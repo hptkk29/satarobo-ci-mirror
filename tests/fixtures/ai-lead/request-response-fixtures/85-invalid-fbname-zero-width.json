@@ -1,0 +1,53 @@
+{
+  "name": "invalid-fbname-zero-width",
+  "description": "fbName chứa ký tự độ rộng bằng 0 (U+200B) bị từ chối. Agent phải LOẠI ký tự nhóm Cc/Cf/Zl/Zp trước khi gửi.",
+  "validates": {
+    "request": "LeadIntakeRequest",
+    "requestExpect": "INVALID",
+    "response": "ErrorEnvelope",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/lead-intakes",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "CONSULTATION_REQUEST:0224ef7dcf4473d0c11bc20b61adf3c413af349b:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Minh​Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "intent": "CONSULTATION_REQUEST",
+      "candidate": {
+        "phoneRaw": "0905 123 456",
+        "campusCode": "CS1"
+      },
+      "evidence": {
+        "phoneMessageMid": "m_TEST_phone_0001",
+        "campusMessageMid": "m_TEST_campus_0001"
+      },
+      "catalogVersion": 7,
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "PAYLOAD_INVALID",
+        "message": "Dữ liệu gửi lên không đúng hợp đồng.",
+        "requestId": "req_test00000080ab"
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "CONSULTATION_REQUEST",
+    "seed": "m_TEST_0001",
+    "v": 1
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "heartbeat-probe-ack",
+  "description": "Heartbeat kế tiếp mang probeAck ⇒ Admin ghi L2 'đã thăm dò hai chiều'.",
+  "validates": {
+    "request": "HeartbeatRequest",
+    "requestExpect": "VALID",
+    "response": "HeartbeatResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/heartbeats",
+    "body": {
+      "schemaVersion": "1.0",
+      "environment": "TEST",
+      "agentVersion": "0.3.0",
+      "buildSha": "9f2c1ab",
+      "contractHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "catalogVersionSeen": 7,
+      "capabilities": [
+        "CATALOG_FETCH",
+        "LEAD_INTAKE",
+        "HANDOFF",
+        "INCIDENT_REPORT"
+      ],
+      "pages": [
+        {
+          "pageId": "104500000000001",
+          "lastWebhookEventAt": "2026-10-26T14:32:41+07:00"
+        }
+      ],
+      "probeAck": {
+        "probeId": "prb_x1y2z3a4b5c6d7",
+        "nonce": "Zk3pQ9vT2mXw8LrA5hJd"
+      },
+      "sentAt": "2026-10-26T14:35:21+07:00"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "serverTime": 1793000000000,
+        "nextHeartbeatSeconds": 60,
+        "contractStatus": "COMPATIBLE",
+        "latestCatalogVersion": 7,
+        "pages": [
+          {
+            "pageId": "104500000000001",
+            "state": "ENABLED"
+          }
+        ],
+        "probe": null
+      },
+      "meta": {
+        "requestId": "req_test00000042ab",
+        "serverTime": 1793000000000
+      }
+    }
+  }
+}

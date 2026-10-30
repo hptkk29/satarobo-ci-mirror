@@ -1,0 +1,44 @@
+{
+  "name": "incident-webhook-failure",
+  "description": "Báo sự cố webhook, chỉ mã + mức độ.",
+  "validates": {
+    "request": "IncidentRequest",
+    "requestExpect": "VALID",
+    "response": "IncidentResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/incidents",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "INCIDENT:cd59c69a43b202345e05f521d200f7889111399c:v1",
+      "pageId": "104500000000001",
+      "category": "WEBHOOK_FAILURE",
+      "severity": "HIGH",
+      "detailCode": "SIGNATURE_MISMATCH",
+      "occurredAt": "2026-10-26T14:33:00+07:00",
+      "correlationId": "3f2b8c1e-5d4a-4e7b-9a10-2c6d8e0f1a23"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_i1a2b3c4d5e6f1",
+        "accepted": true
+      },
+      "meta": {
+        "requestId": "req_test00000030ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "INCIDENT",
+    "seed": "104500000000001|WEBHOOK_FAILURE|SIGNATURE_MISMATCH|2026-10-26T14:33:00+07:00",
+    "v": 1
+  }
+}
