@@ -1,0 +1,779 @@
+import "server-only";
+import { Prisma } from "@prisma/client";
+import { db } from "@/lib/db";
+import { writeAudit } from "@/lib/audit/audit-log";
+import { nguoiMuaChoDon } from "./nguoi-mua";
+import { bamNguoiMua } from "./bam-nguoi-mua";
+import { khoaDay, soDaCoTrongDay, type XacMinhSo, type XmlTrangThai } from "./goi-y-so";
+import { doiChieuXml } from "./doi-chieu-xml";
+import { docNoiDungXmlHoaDon } from "./kho-tep";
+import { docSoDaDungTrongDay, mstDayChoHoaDonMoi } from "./goi-y-so-db";
+import type { PhapNhan } from "./phap-nhan";
+import type { OSoHoaDon } from "./o-so-hoa-don";
+import { khoaDonTrongTx } from "@/lib/finance/ghi-tien-don";
+import { chonHoaDonDuocThay } from "./thay-the";
+import { TOI_THIEU_LY_DO_HOA_DON } from "./trang-thai-hoa-don";
+import type { TepDangGiu } from "./trung-tep";
+
+// lib/finance/hoa-don/ghi-hoa-don.ts — phép GHI trên BẢNG HOÁ ĐƠN (docs/ke-toan-hoa-don/PLAN.md §4).
+//
+// Bốn việc, KHÔNG việc nào chạm sổ tiền (Payment · PaymentRequest · Receipt): tạo hoá đơn NHÁP khi kế
+// toán tải tệp lên (④) · đánh dấu KHÔNG XUẤT · gỡ bản nháp / gỡ "không xuất" · HUỶ bản đã xác nhận
+// (GĐ 8). Xác nhận (⑤ — cấp RCP, xác nhận khoản) là việc của GĐ 5 và đi qua lõi riêng trong
+// `lib/finance/payment.ts`.
+//
+// Người gọi (action) đã: kiểm quyền kế toán ĐÚNG cơ sở · dựng lại lần thu bằng loader của màn (tập
+// khoản + số ròng không đến từ client) · xác minh byte tệp trong kho. Ở đây chỉ còn phần phải
+// NGUYÊN TỬ.
+//
+// ⚠️ Hai kế toán cùng bấm trên MỘT lần thu: không kiểm-rồi-ghi ở tầng ứng dụng. Khoá thật là hai
+// chỉ mục từng phần ở DB (`HoaDonKhoan_paymentId_hieuLuc_key`, `HoaDonDienTu_soHoaDon_conSong_key`);
+// P2002 được dịch thành câu người đọc được.
+// ⚠️ Từ chối trong transaction = `throw` (luật rollback — `return` không rollback).
+
+export type MaLoiGhiHoaDon =
+  | "DA_CO_NGUOI_XU_LY"
+  | "TRUNG_SO"
+  | "DA_DOI"
+  | "THIEU_LY_DO"
+  | "TEP_TRUNG"
+  | "PHAP_NHAN_DOI"
+  | "KHONG_DOI"
+  | "THIEU_SO"
+  | "XML_LECH"
+  | "THIEU_DOI_CHIEU";
+
+const THONG_DIEP: Record<MaLoiGhiHoaDon, string> = {
+  DA_CO_NGUOI_XU_LY: "Lần thu này vừa được người khác tải hoá đơn hoặc đánh dấu — tải lại màn",
+  TRUNG_SO: "Số hoá đơn này đã được dùng trong cùng ký hiệu và cùng pháp nhân phát hành (kể cả hoá đơn đã huỷ hoặc của cơ sở khác dùng chung dãy) — kiểm lại số in trên tờ hoá đơn",
+  DA_DOI: "Hoá đơn vừa bị người khác sửa hoặc gỡ — tải lại màn",
+  THIEU_LY_DO: `Ghi rõ lý do huỷ hoá đơn (ít nhất ${TOI_THIEU_LY_DO_HOA_DON} ký tự)`,
+  // Câu chung — action có phạm vi người xem thì dựng câu cụ thể bằng `thongDiepTepTrung` (trung-tep.ts).
+  TEP_TRUNG: "Tệp PDF này đã gắn cho một hoá đơn khác còn hiệu lực — kiểm lại tệp",
+  PHAP_NHAN_DOI:
+    "Theo cấu hình hoá đơn của cơ sở, ngày phát hành này thuộc pháp nhân KHÁC với bản nháp đang lưu — gỡ bản nháp rồi tạo lại để hoá đơn mang đúng pháp nhân (không tự đổi pháp nhân của bản nháp)",
+  KHONG_DOI: "Ký hiệu, số và ngày phát hành không đổi — không có gì để sửa",
+  THIEU_SO: "Hoá đơn đã xác nhận phải đủ ký hiệu, số hoá đơn và ngày phát hành",
+  // Câu cụ thể (liệt kê chỗ lệch) do người ném truyền qua tham số thứ ba; đây chỉ là câu dự phòng.
+  XML_LECH: "Tệp XML đính kèm không khớp số liệu vừa sửa",
+  THIEU_DOI_CHIEU:
+    "Chưa có XML nào chứng minh số mới: kế toán phải xác nhận đã đối chiếu ký hiệu, số, ngày mới với tờ hoá đơn gốc đã phát hành",
+};
+
+export class LoiGhiHoaDon extends Error {
+  constructor(
+    readonly ma: MaLoiGhiHoaDon,
+    /** `TEP_TRUNG` — hoá đơn đang giữ tệp (để action dựng câu theo phạm vi người xem). */
+    readonly chiTiet: TepDangGiu | null = null,
+    /** Câu riêng thay câu chuẩn của mã (vd liệt kê chỗ XML lệch). */
+    thongDiepRieng?: string,
+  ) {
+    super(thongDiepRieng ?? THONG_DIEP[ma]);
+    this.name = "LoiGhiHoaDon";
+  }
+}
+
+export type NgoaiLeKyHieu = { kyHieuNhap: string; kyHieuCauHinh: string; lyDo: string };
+
+type DbHoacTx = Prisma.TransactionClient | typeof db;
+
+/**
+ * PR3 — chặn gõ trùng SỐ trong cùng DÃY (MST người bán, ký hiệu). Chỉ mục DB chỉ canh `NHAP`/`DA_XAC_NHAN` theo MST ĐÃ
+ * LƯU: nó không thấy bản đã huỷ, bản đang phát hành, cơ sở khác dùng chung dãy, và 19 hoá đơn cũ lưu sai MST. Khoá tư
+ * vấn theo dãy rồi kiểm — hai lượt cùng dãy xếp hàng, không cùng "kiểm thấy trống". TỪ CHỐI = NÉM (rollback).
+ * `truHoaDonId` BẮT BUỘC khai (luật 7): sửa nháp mà quên truyền là tự chặn chính mình.
+ */
+async function chanTrungSoTrongDay(
+  tx: Prisma.TransactionClient,
+  day: { mst: string | null; kyHieu: string | null; soHoaDon: string | null; centerId: string },
+  truHoaDonId: string | null,
+): Promise<void> {
+  if (!day.mst || !day.kyHieu || !day.soHoaDon) return; // nháp còn trống ô ⇒ chưa có gì để trùng
+  // Chuẩn hoá MST của hoá đơn MỚI cùng quy tắc với hoá đơn đã lưu — khoá và phép kiểm phải nói về CÙNG một dãy.
+  const mst = await mstDayChoHoaDonMoi(tx, { mst: day.mst, kyHieu: day.kyHieu, centerId: day.centerId });
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${khoaDay({ mst, kyHieu: day.kyHieu })})::bigint)`;
+  const da = await docSoDaDungTrongDay(tx, { mst, kyHieu: day.kyHieu }, truHoaDonId);
+  if (soDaCoTrongDay(da, day.soHoaDon)) throw new LoiGhiHoaDon("TRUNG_SO");
+}
+
+/**
+ * GĐ 8 bước 13 — xếp hàng hai lượt lưu CÙNG một tệp PDF (cùng SHA-256), kể cả trên hai đơn khác nhau:
+ * không có khoá này thì hai lượt cùng "kiểm thấy trống" rồi cùng ghi. CHỖ DUY NHẤT viết khoá này.
+ */
+async function khoaVanTayPdfTrongTx(tx: Prisma.TransactionClient, sha256: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`hoa-don-pdf:${sha256}`})::bigint)`;
+}
+
+/**
+ * Hoá đơn CÒN SỐNG (NHÁP / ĐÃ XÁC NHẬN) đang giữ tệp PDF có SHA-256 này, trừ `truHoaDonId` (chính bản
+ * nháp đang sửa). KHÔNG SCOPE — cổng chặn tra qua `scopedDb` thì tờ đang nằm ở cơ sở khác bị lọc mất và
+ * cổng mở toang đúng ca cần chặn (cùng bài học `lib/payments/method-lookup.ts`). Bản ĐÃ HUỶ (THAY_THE)
+ * cố ý KHÔNG tính: huỷ xong tải lại đúng tờ ấy cho lần thu đúng là đường thường. KHONG_XUAT không có tệp.
+ * `truHoaDonId` BẮT BUỘC khai (luật 7): sửa nháp mà quên truyền là tự chặn chính mình.
+ */
+export async function hoaDonDangGiuTepPdf(
+  client: DbHoacTx,
+  sha256: string,
+  truHoaDonId: string | null,
+): Promise<TepDangGiu | null> {
+  const h = await client.hoaDonDienTu.findFirst({
+    where: {
+      tepPdfSha256: sha256,
+      trangThai: { in: ["NHAP", "DA_XAC_NHAN"] },
+      ...(truHoaDonId ? { id: { not: truHoaDonId } } : {}),
+    },
+    select: {
+      id: true,
+      orderId: true,
+      centerId: true,
+      kyHieu: true,
+      soHoaDon: true,
+      trangThai: true,
+      order: { select: { code: true } },
+    },
+  });
+  return h
+    ? { id: h.id, orderId: h.orderId, centerId: h.centerId, kyHieu: h.kyHieu, soHoaDon: h.soHoaDon, trangThai: h.trangThai, maDon: h.order.code }
+    : null;
+}
+
+/** Bản cho action kiểm SỚM ngay sau khi xác minh tệp (app/ không import `@/lib/db`). Chỉ báo sớm — cổng thật nằm trong transaction ghi. */
+export function timHoaDonDangGiuTepPdf(sha256: string, truHoaDonId: string | null): Promise<TepDangGiu | null> {
+  return hoaDonDangGiuTepPdf(db, sha256, truHoaDonId);
+}
+
+/** Câu cho người dùng nếu `e` là lỗi đã biết của tầng này; `null` ⇒ lỗi lạ, người gọi ném tiếp. */
+export function thongDiepLoiGhiHoaDon(e: unknown): string | null {
+  return e instanceof LoiGhiHoaDon ? e.message : null;
+}
+
+/** P2002 của một trong hai khoá từng phần ⇒ lỗi nghiệp vụ; lỗi khác ném nguyên. */
+function dichTrung(e: unknown): never {
+  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+    // Chỉ mục viết tay nên `meta.target` có thể là TÊN chỉ mục hoặc danh sách cột — cả hai đều
+    // mang chữ "soHoaDon" khi đụng khoá số.
+    throw new LoiGhiHoaDon(JSON.stringify(e.meta?.target ?? "").includes("soHoaDon") ? "TRUNG_SO" : "DA_CO_NGUOI_XU_LY");
+  }
+  throw e;
+}
+
+export type TepMoi = { khoa: string; ten: string; co: number; sha256: string };
+type NguoiGhi = { id: string; name: string };
+
+export const COT_NGUOI_MUA = {
+  customerName: true,
+  customerPhone: true,
+  customerEmail: true,
+  customerAddress: true,
+  customerWard: true,
+  customerCity: true,
+  customerCccd: true,
+  invoiceBuyerName: true,
+  invoiceCompanyName: true,
+  invoiceTaxCode: true,
+  invoiceEmail: true,
+} satisfies Prisma.OrderSelect;
+
+export async function taoHoaDonChoLanThu(input: {
+  nguoiGhi: NguoiGhi;
+  orderId: string;
+  centerId: string;
+  lanThuKey: string;
+  khoan: readonly { id: string; soTien: number }[];
+  loai:
+    | {
+        trangThai: "NHAP";
+        phapNhan: PhapNhan;
+        so: OSoHoaDon;
+        guiEmailKhach: boolean;
+        pdf: TepMoi;
+        xml: TepMoi | null;
+        /**
+         * GĐ 8 (Q-mở 1) — lần thu THIẾU vẫn xuất "theo số đã thu" (phụ huynh không trả nốt). BẮT BUỘC
+         * khai (kể cả `null`): action là chỗ DUY NHẤT biết lần thu đang thiếu — mặc định là quên nó.
+         */
+        theoSoDaThu: { lyDo: string; thieu: number; nhanDot: string | null } | null;
+        /**
+         * Q-mở 4 — phần dung sai làm tròn được THA của lần thu (`LanThu.tienTha`, dòng LOADER dựng lại).
+         * Hoá đơn ghi số thu THẬT (`tongTien`), phần tha hiện RIÊNG ở cột này. BẮT BUỘC (luật 7): bỏ
+         * trống là cột nằm 0 mãi mà không ai biết — đúng tình trạng trước bản vá.
+         */
+        tienTha: number;
+        /** D2 — số hoá đơn được xác minh bằng cách nào + tình trạng XML (audit). BẮT BUỘC (luật 7): action là chỗ duy nhất biết. */
+        xacMinhSo: XacMinhSo;
+        xmlTrangThai: XmlTrangThai;
+        /** Ký hiệu ngoài cấu hình đã được người CÓ QUYỀN cho phép (audit). BẮT BUỘC (luật 7): `null` = ký hiệu thuộc cấu hình. */
+        ngoaiLeKyHieu: NgoaiLeKyHieu | null;
+      }
+    | { trangThai: "KHONG_XUAT"; lyDo: string };
+}): Promise<{ id: string }> {
+  if (input.khoan.length === 0) throw new LoiGhiHoaDon("DA_DOI");
+  const tongTien = input.khoan.reduce((s, k) => s + k.soTien, 0);
+  try {
+    return await db.$transaction(async (tx) => {
+      const don = await tx.order.findUnique({ where: { id: input.orderId }, select: COT_NGUOI_MUA });
+      if (!don) throw new LoiGhiHoaDon("DA_DOI");
+
+      let rieng: Prisma.HoaDonDienTuUncheckedCreateInput | Record<string, never> = {};
+      const l = input.loai;
+      if (l.trangThai === "NHAP") {
+        const nm = nguoiMuaChoDon(don);
+        // Dấu người mua LÚC TẢI PHIẾU CHỜ (route phiếu chờ ghi vào audit) — đó là thông tin kế toán
+        // đã mang sang MISA. Chưa tải phiếu chờ (hoá đơn làm từ trước khi có màn này) ⇒ dấu hiện tại.
+        const lanIn = await tx.auditLog.findFirst({
+          where: {
+            entityType: "Order",
+            entityId: input.orderId,
+            action: "TAI_PHIEU_CHO",
+            newValues: { path: ["lanThuKey"], equals: input.lanThuKey },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { newValues: true },
+        });
+        const dauLucIn = (lanIn?.newValues as { nguoiMuaHash?: unknown } | null)?.nguoiMuaHash;
+        rieng = {
+          kyHieu: l.so.kyHieu,
+          soHoaDon: l.so.soHoaDon,
+          ngayPhatHanh: l.so.ngayPhatHanh,
+          phapNhanMa: l.phapNhan.ma,
+          phapNhanTen: l.phapNhan.ten,
+          phapNhanMst: l.phapNhan.maSoThue,
+          nguoiMuaTen: nm.hoTen || null,
+          nguoiMuaDonVi: nm.tenDonVi,
+          nguoiMuaMst: nm.maSoThue,
+          nguoiMuaDiaChi: nm.diaChi,
+          emailNhan: nm.email,
+          nguoiMuaHashLucIn: typeof dauLucIn === "string" ? dauLucIn : bamNguoiMua(nm),
+          guiEmailKhach: l.guiEmailKhach,
+          tepPdfKey: l.pdf.khoa,
+          tepPdfTen: l.pdf.ten,
+          tepPdfCo: l.pdf.co,
+          tepPdfSha256: l.pdf.sha256,
+          tepXmlKey: l.xml?.khoa ?? null,
+          tepXmlTen: l.xml?.ten ?? null,
+          tepXmlCo: l.xml?.co ?? null,
+          xuatTheoSoDaThu: l.theoSoDaThu != null,
+          xuatTheoSoDaThuLyDo: l.theoSoDaThu?.lyDo ?? null,
+          tienThaLamTron: l.tienTha,
+        } as Prisma.HoaDonDienTuUncheckedCreateInput;
+      }
+
+      // GĐ 8 (quyết định (1) 27/09): khoản từng nằm trong hoá đơn ĐÃ HUỶ ⇒ bản này thay cho bản đó.
+      // Đọc TỪ DB trong chính transaction — không bao giờ nhận id từ client.
+      const daHuy = await tx.hoaDonDienTu.findMany({
+        where: {
+          orderId: input.orderId,
+          trangThai: "THAY_THE",
+          khoan: { some: { paymentId: { in: input.khoan.map((k) => k.id) } } },
+        },
+        select: { id: true, huyLuc: true, khoan: { select: { paymentId: true } } },
+      });
+      const thayTheChoId = chonHoaDonDuocThay(
+        daHuy.map((h) => ({ id: h.id, huyLuc: h.huyLuc, paymentIds: h.khoan.map((k) => k.paymentId) })),
+        input.khoan.map((k) => k.id),
+      );
+
+      // PR3 — số hoá đơn không được trùng trong DÃY (MST, ký hiệu), kể cả bản huỷ / dãy dùng chung / MST lưu sai.
+      if (l.trangThai === "NHAP") {
+        await chanTrungSoTrongDay(tx, { mst: l.phapNhan.maSoThue, kyHieu: l.so.kyHieu, soHoaDon: l.so.soHoaDon, centerId: input.centerId }, null);
+      }
+
+      // GĐ 8 bước 13 — một tờ hoá đơn chỉ gắn cho MỘT hoá đơn còn sống. Khoá vân tay TRƯỚC khi kiểm, kiểm
+      // TRƯỚC phép ghi đầu tiên; trùng ⇒ throw (rollback).
+      if (l.trangThai === "NHAP") {
+        await khoaVanTayPdfTrongTx(tx, l.pdf.sha256);
+        const giu = await hoaDonDangGiuTepPdf(tx, l.pdf.sha256, null);
+        if (giu) {
+          // Hai kế toán cùng tải ĐÚNG tờ ấy cho CÙNG lần thu ⇒ đó là "người khác vừa xử lý", không phải
+          // "tệp gắn cho lần thu khác" — câu sau sẽ nói sai sự thật với người thua.
+          const cungLanThu = await tx.hoaDonKhoan.count({
+            where: { hoaDonId: giu.id, hieuLuc: true, paymentId: { in: input.khoan.map((k) => k.id) } },
+          });
+          throw cungLanThu > 0 ? new LoiGhiHoaDon("DA_CO_NGUOI_XU_LY") : new LoiGhiHoaDon("TEP_TRUNG", giu);
+        }
+      }
+
+      const hd = await tx.hoaDonDienTu.create({
+        data: {
+          ...rieng,
+          orderId: input.orderId,
+          centerId: input.centerId,
+          trangThai: l.trangThai,
+          tongTien,
+          lyDo: l.trangThai === "KHONG_XUAT" ? l.lyDo : null,
+          thayTheChoId,
+          taoBoiId: input.nguoiGhi.id,
+          khoan: { create: input.khoan.map((k) => ({ paymentId: k.id, soTien: k.soTien })) },
+        },
+        select: { id: true },
+      });
+
+      await writeAudit({
+        tx,
+        actor: input.nguoiGhi,
+        module: "finance",
+        entityType: "HoaDonDienTu",
+        entityId: hd.id,
+        action: l.trangThai === "NHAP" ? "TAO_HOA_DON_NHAP" : "DANH_DAU_KHONG_XUAT",
+        newValues: {
+          orderId: input.orderId,
+          lanThuKey: input.lanThuKey,
+          khoanIds: input.khoan.map((k) => k.id),
+          tongTien,
+          thayTheChoId,
+          ...(l.trangThai === "NHAP"
+            ? {
+                kyHieu: l.so.kyHieu,
+                soHoaDon: l.so.soHoaDon,
+                tepPdfTen: l.pdf.ten,
+                coXml: Boolean(l.xml),
+                xacMinhSo: l.xacMinhSo,
+                xmlTrangThai: l.xmlTrangThai,
+                ...(l.ngoaiLeKyHieu ? { ngoaiLeKyHieu: l.ngoaiLeKyHieu } : {}),
+                tienThaLamTron: l.tienTha,
+                xuatTheoSoDaThu: l.theoSoDaThu != null,
+                ...(l.theoSoDaThu ? { thieu: l.theoSoDaThu.thieu, nhanDot: l.theoSoDaThu.nhanDot } : {}),
+              }
+            : {}),
+        },
+        reason: l.trangThai === "KHONG_XUAT" ? l.lyDo : [l.theoSoDaThu?.lyDo, l.ngoaiLeKyHieu?.lyDo].filter(Boolean).join(" | ") || undefined,
+        orgUnitId: input.centerId,
+      });
+      return hd;
+    });
+  } catch (e) {
+    if (e instanceof LoiGhiHoaDon) throw e;
+    return dichTrung(e);
+  }
+}
+
+export async function capNhatHoaDonNhap(input: {
+  nguoiGhi: NguoiGhi;
+  orderId: string;
+  hoaDonId: string;
+  so: OSoHoaDon;
+  guiEmailKhach: boolean;
+  /** `undefined` = giữ tệp cũ. */
+  pdf?: TepMoi;
+  /** `undefined` = giữ · `null` = gỡ XML. */
+  xml?: TepMoi | null;
+  /** GĐ 8 — BẮT BUỘC: sửa bản nháp là khai lại cả lựa chọn "xuất theo số đã thu" (`null` = không). */
+  theoSoDaThu: { lyDo: string } | null;
+  /** Q-mở 4 — tiền tha làm tròn của lần thu LÚC SỬA (dòng loader dựng lại). BẮT BUỘC (luật 7). */
+  tienTha: number;
+  /** D2 — cách xác minh số của lượt sửa ("KHONG_CAN" = số/ký hiệu không đổi) + tình trạng XML (audit). BẮT BUỘC (luật 7). */
+  xacMinhSo: XacMinhSo;
+  xmlTrangThai: XmlTrangThai;
+  /**
+   * MST pháp nhân phát hành THEO CẤU HÌNH vào ngày phát hành MỚI (action tính). Khác snapshot của bản nháp ⇒ từ chối: sửa ngày
+   * không được âm thầm đổi pháp nhân, cũng không được kiểm trùng số trên dãy của pháp nhân cũ. BẮT BUỘC (luật 7).
+   */
+  phapNhanMstDuKien: string;
+  /** Ngoại lệ ký hiệu đã được cho phép ở lượt sửa này (audit). BẮT BUỘC (luật 7). */
+  ngoaiLeKyHieu: NgoaiLeKyHieu | null;
+}): Promise<{ tepCanXoa: string[] }> {
+  try {
+    return await db.$transaction(async (tx) => {
+      const cu = await tx.hoaDonDienTu.findFirst({
+        where: { id: input.hoaDonId, orderId: input.orderId, trangThai: "NHAP" },
+        select: {
+          updatedAt: true,
+          centerId: true,
+          tepPdfKey: true,
+          tepXmlKey: true,
+          phapNhanMst: true,
+          kyHieu: true,
+          soHoaDon: true,
+          xuatTheoSoDaThu: true,
+          xuatTheoSoDaThuLyDo: true,
+          tienThaLamTron: true,
+        },
+      });
+      if (!cu) throw new LoiGhiHoaDon("DA_DOI");
+      // Từ chối = throw (rollback), đứng TRƯỚC phép ghi đầu tiên.
+      if ((cu.phapNhanMst ?? "").replace(/[\s-]/g, "") !== input.phapNhanMstDuKien.replace(/[\s-]/g, "")) throw new LoiGhiHoaDon("PHAP_NHAN_DOI");
+
+      const data: Prisma.HoaDonDienTuUpdateManyMutationInput = {
+        kyHieu: input.so.kyHieu,
+        soHoaDon: input.so.soHoaDon,
+        ngayPhatHanh: input.so.ngayPhatHanh,
+        guiEmailKhach: input.guiEmailKhach,
+        xuatTheoSoDaThu: input.theoSoDaThu != null,
+        xuatTheoSoDaThuLyDo: input.theoSoDaThu?.lyDo ?? null,
+        tienThaLamTron: input.tienTha,
+      };
+      const tepCanXoa: string[] = [];
+      if (input.pdf) {
+        Object.assign(data, { tepPdfKey: input.pdf.khoa, tepPdfTen: input.pdf.ten, tepPdfCo: input.pdf.co, tepPdfSha256: input.pdf.sha256 });
+        if (cu.tepPdfKey && cu.tepPdfKey !== input.pdf.khoa) tepCanXoa.push(cu.tepPdfKey);
+      }
+      if (input.xml !== undefined) {
+        Object.assign(data, { tepXmlKey: input.xml?.khoa ?? null, tepXmlTen: input.xml?.ten ?? null, tepXmlCo: input.xml?.co ?? null });
+        if (cu.tepXmlKey && cu.tepXmlKey !== input.xml?.khoa) tepCanXoa.push(cu.tepXmlKey);
+      }
+
+      // PR3 — sửa số / ký hiệu của bản nháp: kiểm trùng trong dãy, trừ CHÍNH bản nháp này.
+      await chanTrungSoTrongDay(tx, { mst: cu.phapNhanMst, kyHieu: input.so.kyHieu, soHoaDon: input.so.soHoaDon, centerId: cu.centerId }, input.hoaDonId);
+
+      // GĐ 8 bước 13 — thay tệp PDF: cùng cổng "một tờ một hoá đơn", trừ CHÍNH bản nháp này.
+      if (input.pdf) {
+        await khoaVanTayPdfTrongTx(tx, input.pdf.sha256);
+        const giu = await hoaDonDangGiuTepPdf(tx, input.pdf.sha256, input.hoaDonId);
+        if (giu) throw new LoiGhiHoaDon("TEP_TRUNG", giu);
+      }
+
+      // Chống bấm đôi / sửa chồng: ghi có điều kiện theo `updatedAt` đã đọc (khuôn FIX-H9).
+      const upd = await tx.hoaDonDienTu.updateMany({
+        where: { id: input.hoaDonId, trangThai: "NHAP", updatedAt: cu.updatedAt },
+        data,
+      });
+      if (upd.count !== 1) throw new LoiGhiHoaDon("DA_DOI");
+
+      await writeAudit({
+        tx,
+        actor: input.nguoiGhi,
+        module: "finance",
+        entityType: "HoaDonDienTu",
+        entityId: input.hoaDonId,
+        action: "SUA_HOA_DON_NHAP",
+        oldValues: {
+          kyHieu: cu.kyHieu,
+          soHoaDon: cu.soHoaDon,
+          xuatTheoSoDaThu: cu.xuatTheoSoDaThu,
+          xuatTheoSoDaThuLyDo: cu.xuatTheoSoDaThuLyDo,
+          tienThaLamTron: cu.tienThaLamTron,
+        },
+        newValues: {
+          kyHieu: input.so.kyHieu,
+          soHoaDon: input.so.soHoaDon,
+          doiPdf: Boolean(input.pdf),
+          doiXml: input.xml !== undefined,
+          xuatTheoSoDaThu: input.theoSoDaThu != null,
+          xuatTheoSoDaThuLyDo: input.theoSoDaThu?.lyDo ?? null,
+          tienThaLamTron: input.tienTha,
+          xacMinhSo: input.xacMinhSo,
+          xmlTrangThai: input.xmlTrangThai,
+          ...(input.ngoaiLeKyHieu ? { ngoaiLeKyHieu: input.ngoaiLeKyHieu } : {}),
+        },
+        reason: input.ngoaiLeKyHieu?.lyDo,
+        orgUnitId: cu.centerId,
+      });
+      return { tepCanXoa };
+    });
+  } catch (e) {
+    if (e instanceof LoiGhiHoaDon) throw e;
+    return dichTrung(e);
+  }
+}
+
+/** Gỡ bản NHÁP (tải nhầm) hoặc gỡ dấu KHÔNG XUẤT — nhả khoản về hàng chờ. Bản đã xác nhận không gỡ được. */
+export async function goHoaDonChuaChot(input: {
+  nguoiGhi: NguoiGhi;
+  orderId: string;
+  hoaDonId: string;
+}): Promise<{ tepCanXoa: string[] }> {
+  return db.$transaction(async (tx) => {
+    const cu = await tx.hoaDonDienTu.findFirst({
+      where: { id: input.hoaDonId, orderId: input.orderId, trangThai: { in: ["NHAP", "KHONG_XUAT"] } },
+      select: {
+        trangThai: true,
+        centerId: true,
+        updatedAt: true,
+        tepPdfKey: true,
+        tepXmlKey: true,
+        kyHieu: true,
+        soHoaDon: true,
+        lyDo: true,
+        khoan: { select: { paymentId: true } },
+      },
+    });
+    if (!cu) throw new LoiGhiHoaDon("DA_DOI");
+
+    // Nhật ký trước: sau khi xoá, `writeAudit` không còn suy được đơn vị từ thực thể.
+    await writeAudit({
+      tx,
+      actor: input.nguoiGhi,
+      module: "finance",
+      entityType: "HoaDonDienTu",
+      entityId: input.hoaDonId,
+      action: cu.trangThai === "NHAP" ? "GO_HOA_DON_NHAP" : "GO_KHONG_XUAT",
+      oldValues: {
+        orderId: input.orderId,
+        trangThai: cu.trangThai,
+        kyHieu: cu.kyHieu,
+        soHoaDon: cu.soHoaDon,
+        lyDo: cu.lyDo,
+        khoanIds: cu.khoan.map((k) => k.paymentId),
+      },
+      orgUnitId: cu.centerId,
+    });
+    // `HoaDonKhoan` xoá theo (Cascade) ⇒ khoản về lại hàng chờ. Có điều kiện `updatedAt`: ai vừa
+    // sửa / xác nhận giữa chừng thì 0 dòng ⇒ ném ⇒ rollback cả nhật ký.
+    const del = await tx.hoaDonDienTu.deleteMany({
+      where: { id: input.hoaDonId, trangThai: cu.trangThai, updatedAt: cu.updatedAt },
+    });
+    if (del.count !== 1) throw new LoiGhiHoaDon("DA_DOI");
+    return { tepCanXoa: [cu.tepPdfKey, cu.tepXmlKey].filter((k): k is string => Boolean(k)) };
+  });
+}
+
+/**
+ * HUỶ hoá đơn ĐÃ XÁC NHẬN (quyết định (1) 27/09): bản cũ → THAY_THE kèm ai / lúc nào / vì sao, dòng nối
+ * `hieuLuc = false` ⇒ khoản TRỞ LẠI hàng chờ để tải hoá đơn đúng theo luồng thường (bản kế tiếp tự nối
+ * `thayTheChoId` về đây — `taoHoaDonChoLanThu`).
+ *
+ * KHÔNG chạm: Payment (vẫn CONFIRMED), Receipt (RCP giữ nguyên), PaymentRequest, HoaDonGuiEmail,
+ * EmailQueue, tệp trong kho. Thư đang chờ gửi của bản này tự dừng: handler (`giuLuotGuiHoaDon`) và
+ * worker (`chuanBiGuiHoaDon`) đều đọc LẠI trạng thái hoá đơn và chỉ gửi bản DA_XAC_NHAN.
+ * ⚠️ KHÔNG đóng lượt gửi CHO/DANG_GUI ở đây: `ghiKetQuaGuiHoaDon` chỉ chuyển từ CHO/DANG_GUI — đóng
+ * sớm thì một lượt đang bay mà gửi được sẽ không bao giờ được ghi là đã gửi.
+ *
+ * Mọi từ chối trong transaction là `throw` và đứng TRƯỚC phép ghi đầu tiên (luật rollback).
+ */
+export async function huyHoaDonDaXacNhan(input: {
+  nguoiHuy: NguoiGhi;
+  orderId: string;
+  hoaDonId: string;
+  lyDo: string;
+  now: Date;
+}): Promise<{ paymentIds: string[]; so: string }> {
+  const lyDo = input.lyDo.trim();
+  if (lyDo.length < TOI_THIEU_LY_DO_HOA_DON) throw new LoiGhiHoaDon("THIEU_LY_DO");
+
+  return db.$transaction(async (tx) => {
+    // Xếp hàng với chốt / gửi lại / ghi tiền trên CÙNG đơn — cùng khoá với `chotHoaDon`.
+    await khoaDonTrongTx(tx, input.orderId);
+    const cu = await tx.hoaDonDienTu.findFirst({
+      where: { id: input.hoaDonId, orderId: input.orderId, trangThai: "DA_XAC_NHAN" },
+      select: {
+        centerId: true,
+        kyHieu: true,
+        soHoaDon: true,
+        tongTien: true,
+        xacNhanLuc: true,
+        khoan: { where: { hieuLuc: true }, select: { paymentId: true } },
+      },
+    });
+    if (!cu) throw new LoiGhiHoaDon("DA_DOI");
+    const paymentIds = cu.khoan.map((k) => k.paymentId);
+    const so = [cu.kyHieu, cu.soHoaDon].filter(Boolean).join("-");
+
+    // Ghi #1 — có điều kiện trạng thái: hai người cùng huỷ ⇒ người sau đổi 0 dòng ⇒ ném ⇒ rollback.
+    const upd = await tx.hoaDonDienTu.updateMany({
+      where: { id: input.hoaDonId, trangThai: "DA_XAC_NHAN" },
+      data: { trangThai: "THAY_THE", huyLyDo: lyDo, huyBoiId: input.nguoiHuy.id, huyLuc: input.now },
+    });
+    if (upd.count !== 1) throw new LoiGhiHoaDon("DA_DOI");
+    await tx.hoaDonKhoan.updateMany({ where: { hoaDonId: input.hoaDonId, hieuLuc: true }, data: { hieuLuc: false } });
+
+    await writeAudit({
+      tx,
+      actor: input.nguoiHuy,
+      module: "finance",
+      entityType: "HoaDonDienTu",
+      entityId: input.hoaDonId,
+      action: "HUY_HOA_DON",
+      oldValues: {
+        orderId: input.orderId,
+        trangThai: "DA_XAC_NHAN",
+        kyHieu: cu.kyHieu,
+        soHoaDon: cu.soHoaDon,
+        tongTien: cu.tongTien,
+        xacNhanLuc: cu.xacNhanLuc?.toISOString() ?? null,
+        khoanIds: paymentIds,
+      },
+      newValues: { trangThai: "THAY_THE", khoanTraVeHangCho: paymentIds },
+      reason: lyDo,
+      orgUnitId: cu.centerId,
+    });
+    return { paymentIds, so };
+  });
+}
+
+export type SoDaThay = { kyHieu: string | null; soHoaDon: string | null; ngayPhatHanh: string | null };
+
+const isoNgay = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null);
+
+/**
+ * ĐÍNH CHÍNH ký hiệu / số / ngày phát hành của hoá đơn ĐÃ XÁC NHẬN do kế toán TẢI LÊN (24/10/2026). Sinh ra từ ca thật:
+ * kế toán gõ ký hiệu `1C26MVS` cho tờ `1C26MNV-37` và trước đây chỉ sửa được bằng SQL trên DB.
+ *
+ * Đây là sửa LỜI KHAI kế toán đã gõ sai, KHÔNG phải sửa tờ hoá đơn pháp lý — tờ ở phần mềm phát hành không đổi. Nên:
+ *   · chỉ bản `DA_XAC_NHAN` với `nguonPhatHanh = TAI_LEN` (bản MISA_API mang số do MISA cấp — nguồn sự thật là MISA);
+ *   · KHÔNG chạm: Payment · Receipt (RCP) · HoaDonKhoan · HoaDonGuiEmail · EmailQueue · tệp trong kho · pháp nhân (MST) ·
+ *     số tiền. Thư ĐÃ GỬI giữ nguyên nội dung cũ (lịch sử); thư gửi lại từ nay đọc số mới;
+ *   · số mới không được trùng trong DÃY (MST, ký hiệu) — cùng cổng với lúc lưu nháp, trừ CHÍNH hoá đơn này;
+ *   · XML đính kèm đọc được mà LỆCH số liệu mới ⇒ từ chối (XML là bằng chứng, không sửa XML ở đây);
+ *   · lý do ≥ TOI_THIEU_LY_DO_HOA_DON ký tự + nhật ký đủ giá trị cũ / mới (không có cột mới — lịch sử = AuditLog).
+ *
+ * `daThay` = ba ô người sửa đã THẤY trên màn: khác giá trị đang lưu (có người sửa trước) ⇒ DA_DOI, không ghi gì.
+ * Mọi từ chối trong transaction là `throw` và đứng TRƯỚC phép ghi đầu tiên (luật rollback).
+ * Người gọi (action) đã: cổng kế toán đúng cơ sở · `kiemOSoHoaDon` · cổng ký hiệu với cấu hình (`ngoaiLeKyHieu`).
+ */
+export async function dinhChinhSoHoaDon(input: {
+  nguoiSua: NguoiGhi;
+  orderId: string;
+  hoaDonId: string;
+  /** Ba ô SAU khi sửa (đã qua `kiemOSoHoaDon`). */
+  so: OSoHoaDon;
+  /** Ba ô trước khi sửa mà người dùng đã thấy. BẮT BUỘC (luật 7). */
+  daThay: SoDaThay;
+  lyDo: string;
+  /** Ký hiệu ngoài cấu hình đã được người CÓ QUYỀN cho phép. BẮT BUỘC (luật 7): `null` = không phải ngoại lệ. */
+  ngoaiLeKyHieu: NgoaiLeKyHieu | null;
+  /**
+   * Lời khai của kế toán: ký hiệu / số / ngày MỚI đã đối chiếu với tờ hoá đơn gốc đã phát hành. BẮT BUỘC (luật 7). Lõi chỉ
+   * miễn đòi khi XML đính kèm đọc được, khớp VÀ phủ mọi ô vừa đổi; còn lại (không XML · XML không đọc được · XML thiếu thẻ)
+   * thì `false` ⇒ THIEU_DOI_CHIEU. Đây là LỜI KHAI của người dùng, không phải bằng chứng của hệ thống — nhật ký ghi phân biệt.
+   */
+  daDoiChieuChungTu: boolean;
+  /** Kết quả đối chiếu ký hiệu mới với cấu hình cơ sở — chỉ để ghi nhật ký. BẮT BUỘC (luật 7). */
+  doiChieuCauHinh: "KHOP" | "KHONG_CO_CAU_HINH" | "KHONG_DOI_KY_HIEU" | "NGOAI_LE";
+}): Promise<{ truoc: SoDaThay; sau: SoDaThay; daGuiEmail: number }> {
+  const lyDo = input.lyDo.trim();
+  if (lyDo.length < TOI_THIEU_LY_DO_HOA_DON) throw new LoiGhiHoaDon("THIEU_LY_DO");
+  const { kyHieu, soHoaDon, ngayPhatHanh } = input.so;
+  if (!kyHieu || !soHoaDon || !ngayPhatHanh) throw new LoiGhiHoaDon("THIEU_SO");
+  const sau: SoDaThay = { kyHieu, soHoaDon, ngayPhatHanh: isoNgay(ngayPhatHanh) };
+
+  // Đọc XML NGOÀI transaction (gọi mạng tới kho tệp — không giữ khoá DB trong lúc đó). Hoá đơn đã xác nhận thì tệp XML
+  // không còn đường đổi, nên đọc trước rồi dùng trong transaction là an toàn.
+  let xmlTrangThai: XmlTrangThai = "KHONG_CO";
+  let xmlPhuMoiO = false; // XML khớp VÀ phủ mọi ô vừa đổi ⇒ XML là bằng chứng, khỏi đòi lời khai
+  const truocTx = await db.hoaDonDienTu.findFirst({
+    where: { id: input.hoaDonId, orderId: input.orderId, trangThai: "DA_XAC_NHAN", nguonPhatHanh: "TAI_LEN" },
+    select: { tepXmlKey: true },
+  });
+  if (truocTx?.tepXmlKey) {
+    const noiDung = await docNoiDungXmlHoaDon(truocTx.tepXmlKey);
+    const dc = noiDung ? doiChieuXml(noiDung, { kyHieu, soHoaDon, ngayPhatHanh: sau.ngayPhatHanh, mstNguoiBan: null, tongTien: null }) : null;
+    if (dc?.loai === "LECH") {
+      throw new LoiGhiHoaDon(
+        "XML_LECH",
+        null,
+        `Hoá đơn có XML đính kèm mà XML không khớp số vừa sửa — ${dc.lech.join("; ")}. XML là bằng chứng của tờ hoá đơn: kiểm lại số / ký hiệu đang sửa.`,
+      );
+    }
+    xmlTrangThai = !dc || dc.loai === "KHONG_DOC_DUOC" ? "KHONG_DOC_DUOC" : dc.daSo.includes("số hoá đơn") ? "KHOP_SO" : "KHOP_KHONG_CO_SO";
+    if (dc?.loai === "KHOP") {
+      // Chỉ tính các ô THẬT SỰ đổi (so với ba ô người dùng đã thấy): XML phải phủ đúng những ô đó.
+      const odoi = [
+        ...(input.daThay.kyHieu !== sau.kyHieu ? ["ký hiệu"] : []),
+        ...(input.daThay.soHoaDon !== sau.soHoaDon ? ["số hoá đơn"] : []),
+        ...(input.daThay.ngayPhatHanh !== sau.ngayPhatHanh ? ["ngày lập"] : []),
+      ];
+      xmlPhuMoiO = odoi.length > 0 && odoi.every((o) => dc.daSo.includes(o));
+    }
+  }
+  // Không có bằng chứng XML cho ô vừa đổi ⇒ phải có lời khai đối chiếu chứng từ gốc. Lệch hẳn (không đổi gì) để transaction báo KHONG_DOI.
+  const khongDoiGi =
+    input.daThay.kyHieu === sau.kyHieu && input.daThay.soHoaDon === sau.soHoaDon && input.daThay.ngayPhatHanh === sau.ngayPhatHanh;
+  if (!khongDoiGi && !xmlPhuMoiO && !input.daDoiChieuChungTu) throw new LoiGhiHoaDon("THIEU_DOI_CHIEU");
+  const xacMinh: "XML" | "KE_TOAN_DA_DOI_CHIEU" = xmlPhuMoiO ? "XML" : "KE_TOAN_DA_DOI_CHIEU";
+
+  try {
+    return await db.$transaction(async (tx) => {
+      // Xếp hàng với chốt / huỷ / gửi lại / ghi tiền trên CÙNG đơn — cùng khoá với `huyHoaDonDaXacNhan`.
+      await khoaDonTrongTx(tx, input.orderId);
+      const cu = await tx.hoaDonDienTu.findFirst({
+        where: { id: input.hoaDonId, orderId: input.orderId, trangThai: "DA_XAC_NHAN", nguonPhatHanh: "TAI_LEN" },
+        select: { updatedAt: true, centerId: true, phapNhanMst: true, kyHieu: true, soHoaDon: true, ngayPhatHanh: true },
+      });
+      if (!cu) throw new LoiGhiHoaDon("DA_DOI");
+      const truoc: SoDaThay = { kyHieu: cu.kyHieu, soHoaDon: cu.soHoaDon, ngayPhatHanh: isoNgay(cu.ngayPhatHanh) };
+      if (truoc.kyHieu !== input.daThay.kyHieu || truoc.soHoaDon !== input.daThay.soHoaDon || truoc.ngayPhatHanh !== input.daThay.ngayPhatHanh) {
+        throw new LoiGhiHoaDon("DA_DOI");
+      }
+      if (truoc.kyHieu === sau.kyHieu && truoc.soHoaDon === sau.soHoaDon && truoc.ngayPhatHanh === sau.ngayPhatHanh) {
+        throw new LoiGhiHoaDon("KHONG_DOI");
+      }
+
+      // Cùng cổng chống trùng với lúc lưu nháp: số mới không được đã dùng trong dãy (MST, ký hiệu MỚI), trừ chính hoá đơn này.
+      await chanTrungSoTrongDay(tx, { mst: cu.phapNhanMst, kyHieu, soHoaDon, centerId: cu.centerId }, input.hoaDonId);
+
+      // Thư ĐÃ GỬI khách mang số cũ — không sửa được thư đã đi; chỉ đếm để màn nhắc kế toán gửi lại nếu cần.
+      const daGuiEmail = await tx.hoaDonGuiEmail.count({ where: { hoaDonId: input.hoaDonId, trangThai: "DA_GUI" } });
+
+      // Ghi có điều kiện theo phiên bản vừa đọc: ai sửa / huỷ xen giữa thì 0 dòng ⇒ ném ⇒ rollback (khuôn FIX-H9).
+      const upd = await tx.hoaDonDienTu.updateMany({
+        where: { id: input.hoaDonId, trangThai: "DA_XAC_NHAN", updatedAt: cu.updatedAt },
+        data: { kyHieu, soHoaDon, ngayPhatHanh },
+      });
+      if (upd.count !== 1) throw new LoiGhiHoaDon("DA_DOI");
+
+      await writeAudit({
+        tx,
+        actor: input.nguoiSua,
+        module: "finance",
+        entityType: "HoaDonDienTu",
+        entityId: input.hoaDonId,
+        action: "DINH_CHINH_SO_HOA_DON",
+        oldValues: { orderId: input.orderId, ...truoc },
+        newValues: {
+          ...sau,
+          xmlTrangThai,
+          xacMinh,
+          doiChieuCauHinh: input.doiChieuCauHinh,
+          ...(input.ngoaiLeKyHieu ? { ngoaiLeKyHieu: input.ngoaiLeKyHieu } : {}),
+        },
+        reason: [lyDo, input.ngoaiLeKyHieu?.lyDo].filter(Boolean).join(" | "),
+        orgUnitId: cu.centerId,
+      });
+      return { truoc, sau, daGuiEmail };
+    });
+  } catch (e) {
+    if (e instanceof LoiGhiHoaDon) throw e;
+    return dichTrung(e);
+  }
+}
+
+/**
+ * GĐ 8 (quyết định (2) 27/09) — kế toán đối chiếu và ghi "KHÔNG TRÙNG — vẫn xuất" lên bản NHÁP của
+ * lần thu nghi trùng. Ghi CÓ ĐIỀU KIỆN theo phiên bản bản nháp người dùng đã thấy (`phienBan`) và chỉ
+ * khi chưa ghi — bấm đôi hay sửa chồng ⇒ 0 dòng ⇒ ném. `nhatKy` do action lấy từ dòng LOADER dựng lại,
+ * không từ client. Từ chối trong transaction = `throw`, đứng trước phép ghi.
+ */
+export async function ghiKhongTrung(input: {
+  nguoiGhi: NguoiGhi;
+  orderId: string;
+  hoaDonId: string;
+  phienBan: Date;
+  lyDo: string;
+  /** Từ dòng LOADER dựng lại: khoá lần thu, khoản, số tiền, và câu bằng chứng nghi trùng đã in cho kế toán. */
+  nhatKy: { lanThuKey: string; khoanIds: readonly string[]; soTien: number; bangChung: string };
+  now: Date;
+}): Promise<void> {
+  const lyDo = input.lyDo.trim();
+  if (lyDo.length < TOI_THIEU_LY_DO_HOA_DON) throw new LoiGhiHoaDon("THIEU_LY_DO");
+  await db.$transaction(async (tx) => {
+    const cu = await tx.hoaDonDienTu.findFirst({
+      where: { id: input.hoaDonId, orderId: input.orderId, trangThai: "NHAP" },
+      select: { updatedAt: true, centerId: true, khongTrungLyDo: true },
+    });
+    if (!cu || cu.updatedAt.getTime() !== input.phienBan.getTime() || cu.khongTrungLyDo != null) {
+      throw new LoiGhiHoaDon("DA_DOI");
+    }
+    const upd = await tx.hoaDonDienTu.updateMany({
+      where: { id: input.hoaDonId, orderId: input.orderId, trangThai: "NHAP", updatedAt: input.phienBan, khongTrungLyDo: null },
+      data: { khongTrungLyDo: lyDo, khongTrungBoiId: input.nguoiGhi.id, khongTrungLuc: input.now },
+    });
+    if (upd.count !== 1) throw new LoiGhiHoaDon("DA_DOI");
+    await writeAudit({
+      tx,
+      actor: input.nguoiGhi,
+      module: "finance",
+      entityType: "HoaDonDienTu",
+      entityId: input.hoaDonId,
+      action: "XAC_NHAN_KHONG_TRUNG",
+      newValues: {
+        orderId: input.orderId,
+        lanThuKey: input.nhatKy.lanThuKey,
+        khoanIds: [...input.nhatKy.khoanIds],
+        soTien: input.nhatKy.soTien,
+        bangChung: input.nhatKy.bangChung,
+      },
+      reason: lyDo,
+      orgUnitId: cu.centerId,
+    });
+  });
+}
