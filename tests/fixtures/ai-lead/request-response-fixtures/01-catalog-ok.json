@@ -1,0 +1,59 @@
+{
+  "name": "catalog-ok",
+  "description": "Lấy danh mục: 1 Page, 3 cơ sở (CS3 tạm ngưng nhận khách). Thân request rỗng — chuỗi ký dùng SHA-256 của thân rỗng.",
+  "validates": {
+    "request": null,
+    "requestExpect": "NA",
+    "response": "CatalogResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/ai-lead-agent/v1/catalog",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "ETag": "cat-7-a1b2c3"
+    },
+    "body": {
+      "ok": true,
+      "data": {
+        "catalogVersion": 7,
+        "publishedAt": "2026-10-26T09:00:00+07:00",
+        "maxAgeSeconds": 300,
+        "etag": "cat-7-a1b2c3",
+        "pages": [
+          {
+            "pageId": "104500000000001",
+            "campuses": [
+              {
+                "campusCode": "CS1",
+                "name": "Sata Robo — Cơ sở 1 (TEST)",
+                "address": "Địa chỉ mẫu số 1, Đà Nẵng",
+                "acceptingLeads": true
+              },
+              {
+                "campusCode": "CS2",
+                "name": "Sata Robo — Cơ sở 2 (TEST)",
+                "address": "Địa chỉ mẫu số 2, Đà Nẵng",
+                "acceptingLeads": true
+              },
+              {
+                "campusCode": "CS3",
+                "name": "Sata Robo — Cơ sở 3 (TEST, tạm ngưng)",
+                "address": "Địa chỉ mẫu số 3, Đà Nẵng",
+                "acceptingLeads": false
+              }
+            ]
+          }
+        ]
+      },
+      "meta": {
+        "requestId": "req_test00000001ab",
+        "serverTime": 1793000000000
+      }
+    }
+  }
+}
