@@ -1,0 +1,8 @@
+# File chạy trên VPS Linux: phải giữ LF kể cả khi checkout trên Windows (autocrlf=true),
+# nếu không bash báo "$'': command not found" và cron/backup chết im.
+*.sh text eol=lf
+deploy/** text eol=lf
+Dockerfile text eol=lf
+# Script Node có shebang: CRLF làm vitest không gỡ được dòng `#!…` ⇒ "SyntaxError: Invalid or
+# unexpected token" khi test import nó trên Windows (đo 10/10/2026, scripts/ci/ghcr-don-tag.mjs).
+*.mjs text eol=lf

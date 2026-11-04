@@ -1,0 +1,11 @@
+{
+  "event": "message.received",
+  "data": {
+    "messageId": "zc-msg-2001",
+    "conversationId": "zc-conv-88",
+    "senderUid": "111222333444555666",
+    "content": "alo",
+    "contentType": "text",
+    "sentAt": "2026-09-06T03:00:00.000Z"
+  }
+}
