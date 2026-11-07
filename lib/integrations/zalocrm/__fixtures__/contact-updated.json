@@ -1,0 +1,16 @@
+{
+  "event": "contact.updated",
+  "orgCode": "cs1",
+  "data": {
+    "contactId": "zc-ct-9",
+    "changes": {
+      "phone": { "from": null, "to": "0912345678" }
+    },
+    "contact": {
+      "id": "zc-ct-9",
+      "fullName": "Chị Lan",
+      "phone": "0912345678",
+      "email": "lan@example.com"
+    }
+  }
+}

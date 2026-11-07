@@ -1,0 +1,60 @@
+{
+  "name": "intake-invalid-phone",
+  "description": "SĐT bàn (không phải di động) ⇒ KHÔNG khác 'thiếu SĐT': NEED_INFO + askFields=[phone].",
+  "validates": {
+    "request": "LeadIntakeRequest",
+    "requestExpect": "VALID",
+    "response": "LeadIntakeResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/lead-intakes",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "CONSULTATION_REQUEST:26d2096b553726cf602b93912942e7927a0d1bc3:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "intent": "CONSULTATION_REQUEST",
+      "candidate": {
+        "phoneRaw": "0236 3123456",
+        "campusCode": "CS1"
+      },
+      "evidence": {
+        "phoneMessageMid": "m_TEST_phone_0003",
+        "campusMessageMid": "m_TEST_campus_0003"
+      },
+      "catalogVersion": 7,
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_c3d4e5f6a1b2c3",
+        "status": "NEED_INFO",
+        "nextAction": "ASK_FIELDS",
+        "askFields": [
+          "phone"
+        ]
+      },
+      "meta": {
+        "requestId": "req_test00000012ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "CONSULTATION_REQUEST",
+    "seed": "m_TEST_0003",
+    "v": 1
+  }
+}

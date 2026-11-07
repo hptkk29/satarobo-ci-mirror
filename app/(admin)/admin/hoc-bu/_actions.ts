@@ -1,0 +1,1138 @@
+"use server";
+
+import { z } from "zod";
+import { revalidatePath } from "next/cache";
+import { auth } from "@/lib/auth";
+import type { Session } from "next-auth";
+import { checkPermission } from "@/lib/auth/check-permission";
+import { resolveActor } from "@/lib/auth/actor";
+import { nguoiHocBu, phamViTuQuyen, type NguoiHocBu } from "@/lib/hoc-bu/pham-vi";
+import { scopedDb } from "@/lib/db-scope";
+import { getAuditActor } from "@/lib/audit/log";
+import { writeAudit } from "@/lib/audit/audit-log";
+import type { Prisma } from "@prisma/client";
+import { LoiDong, chuyenTrangThaiDong } from "@/lib/hoc-bu/dong-service";
+import { LY_DO_TOI_THIEU } from "@/lib/hoc-bu/huy";
+import { docCoSoCuaDong, docDongCanBuTheoKhoa, docDongTheoId } from "@/lib/hoc-bu/danh-sach-db";
+import { docBienLaiLuot } from "@/lib/hoc-bu/bien-lai-luot-db";
+import { giaiThichLuot, type DongGiaiThich } from "@/lib/hoc-bu/hien-thi-thuan";
+import { LoiTrungLich } from "@/lib/hoc-bu/loi";
+import { KHONG_XUNG_DOT } from "@/lib/lms/lich-xung-dot";
+import { dungThongDiepXungDot } from "@/lib/lms/schedule-conflict";
+import { TOI_DA_BAI_MOI_CASE, kiemNhomNhieuBai } from "@/lib/hoc-bu/case-nhieu-bai-thuan";
+import { caseChoNhom, whereCase, type DongCase } from "@/lib/hoc-bu/case-doc";
+import {
+  LoiHocBu,
+  gvTrongCa,
+  goiYTuXepChoCase,
+  taoCaseVaXep,
+  xepVaoCaseCoSan,
+  goKhoiCase,
+  nangCapCaseTheoYeuCau,
+  huyCase,
+  duyetCase,
+  duyetYeuCauThemBe,
+  diemDanhBe,
+  suaDiemDanhBe,
+  goBeKhoiCase,
+  suaCase,
+  ghiDanhGiaMuc,
+  taoPhiBu,
+  mienPhiBu,
+  goMienPhiBu,
+  canhBaoPhiKhiHuy,
+  type GvTrongCa,
+} from "@/lib/hoc-bu/case-db";
+import { cauGoiY } from "@/lib/phan-cong/tu-xep-db";
+import { vnYmd } from "@/lib/time/vn";
+import { docBuoiDeBu, taoDongBuTheoYeuCau, type BuoiDeBu, type KetQuaYeuCau } from "@/lib/hoc-bu/yeu-cau-ph-db";
+import { TOI_DA_BUOI_MOI_YEU_CAU } from "@/lib/hoc-bu/yeu-cau-ph";
+import { guiBaiKiemTraBu } from "@/lib/hoc-bu/tai-lieu-bu";
+import { capThemLuot } from "@/lib/hoc-bu/cap-them-luot-db";
+import { coSoCuaNguon, trongGiaoDich } from "@/lib/parttime/thao-tac";
+import { chotTrucKhiCoBu, trucTrongCaCuaBuoi } from "@/lib/parttime/truc-bu";
+import { rutYeuCauThemBe, tuChoiYeuCauThemBe } from "@/lib/hoc-bu/yeu-cau-them-be-db";
+import { beMoiTrongLo, quyetDinhThemVaoCase } from "@/lib/hoc-bu/yeu-cau-them-be-thuan";
+import { TOI_DA_LUOT_MOI_LAN } from "@/lib/hoc-bu/cap-them-luot";
+
+// Học bù đời mới (docs/hoc-bu/DAC-TA.md). Luồng cũ "xếp bé vào buổi của lớp khác" đã GỠ
+// (chốt 10). Quyền hỏi ở ĐẦU mỗi action (layout gate chưa đủ — Server Action là endpoint riêng);
+// luật nghiệp vụ + phép ghi ở `lib/hoc-bu/case-db.ts`.
+
+/** T16 — xung đột lịch có CẤU TRÚC (giáo viên · phòng · học viên) để màn hiện từng nhóm, thay vì một câu dài. Câu chữ đã qua luật che theo cơ sở của người xem. */
+export type XungDotNhom = { nhom: "GIAO_VIEN" | "PHONG" | "HOC_VIEN"; dong: string[] };
+type KetQua = { ok: true; canhBaoTruc?: string } | { ok: false; error: string; xungDot?: XungDotNhom[] };
+/** Kết quả có LỜI NHẮN cho người bấm (T06): thành công nhưng còn việc phải làm ngoài hệ thống (vd. báo kế toán hoàn phí). */
+type KetQuaCoNhac = { ok: true; canhBao?: string } | { ok: false; error: string };
+
+/**
+ * `actor` mang theo PHẠM VI (T10): `chiCuaSale` (Sale chỉ học viên mình phụ trách) và, cho điểm danh, `chiGv` (giáo viên thường chỉ case MÌNH dạy). Hai thứ này
+ * suy từ quyền, đọc MỘT lần ở đây — mọi dịch vụ ghi nhận `NguoiHocBu` nên không action nào quên được.
+ */
+type Ngu = { ok: true; actor: NguoiHocBu; session: Session; chiGv: string | undefined } | { ok: false; error: string };
+
+async function cong(quyen: "makeup:manage" | "makeup:waive" | "makeup:attend"): Promise<Ngu> {
+  const session = await auth();
+  if (!session?.user) return { ok: false, error: "Chưa đăng nhập" };
+  if (!(await checkPermission(quyen))) {
+    return {
+      ok: false,
+      error:
+        quyen === "makeup:waive"
+          ? "Chỉ Quản lý cơ sở / Admin được làm việc này"
+          : quyen === "makeup:attend"
+            ? "Chỉ quản lý / giáo viên được điểm danh và nhận xét buổi bù"
+            : "Bạn không có quyền xếp học bù",
+    };
+  }
+  const [xemTatCa, quanLy] = await Promise.all([checkPermission("makeup:view-all"), checkPermission("makeup:manage")]);
+  // Giáo viên thường (có `makeup:attend` nhưng KHÔNG `makeup:manage`) chỉ điểm danh / đánh giá / gửi bài case do CHÍNH MÌNH dạy — kể cả khi gọi từ
+  // action của admin (HB-24). Quản lý (có manage) không bị buộc.
+  const { chiCuaSale, chiGv } = phamViTuQuyen({ xemTatCa, quanLy }, session.user.id);
+  return { ok: true, actor: nguoiHocBu(await resolveActor(session.user.id), chiCuaSale), session, chiGv };
+}
+
+function dichLoi(e: unknown): { ok: false; error: string } {
+  if (e instanceof LoiHocBu) return { ok: false, error: e.message };
+  console.error("[hoc-bu]", e);
+  return { ok: false, error: "Có lỗi khi lưu — thử lại sau ít phút" };
+}
+
+/** `LoiTrungLich` → câu chữ chia theo chiều xung đột. Mỗi chiều dựng lại bằng CHÍNH `dungThongDiepXungDot` (luật che tên nguồn ở cơ sở người xem không đọc được). */
+async function xungDotCoCauTruc(e: LoiTrungLich, actor: NguoiHocBu): Promise<XungDotNhom[]> {
+  const k = e.ketQua;
+  const rieng = (p: Partial<typeof k>) => dungThongDiepXungDot({ ...KHONG_XUNG_DOT, ...p, coXungDot: true }, { actor });
+  const [gv, phong, hv] = await Promise.all([
+    k.teacherConflicts.length ? rieng({ teacherConflicts: k.teacherConflicts }) : Promise.resolve([]),
+    k.roomConflicts.length ? rieng({ roomConflicts: k.roomConflicts }) : Promise.resolve([]),
+    k.studentConflicts.length ? rieng({ studentConflicts: k.studentConflicts }) : Promise.resolve([]),
+  ]);
+  return [
+    { nhom: "GIAO_VIEN" as const, dong: gv },
+    { nhom: "PHONG" as const, dong: phong },
+    { nhom: "HOC_VIEN" as const, dong: hv },
+  ].filter((g) => g.dong.length > 0);
+}
+
+/** Như `dichLoi` nhưng với đường XẾP LỊCH: trùng lịch trả thêm `xungDot` có cấu trúc. */
+async function dichLoiXep(e: unknown, actor: NguoiHocBu): Promise<{ ok: false; error: string; xungDot?: XungDotNhom[] }> {
+  if (e instanceof LoiTrungLich) return { ok: false, error: e.message, xungDot: await xungDotCoCauTruc(e, actor) };
+  return dichLoi(e);
+}
+
+function xong(caseId?: string): void {
+  revalidatePath("/hoc-bu");
+  if (caseId) revalidatePath(`/hoc-bu/case/${caseId}`);
+}
+
+// T14: nhật ký học bù ghi TRONG giao dịch của dịch vụ (`lib/hoc-bu/nhat-ky.ts`) — server action không tự ghi sau khi dịch vụ đã commit
+// (bản cũ: lỗi giữa chừng để lại phép ghi không dấu vết, và nhiều phép ghi không có dòng nào). Hai đường huỷ/khôi phục DÒNG ở dưới ghi trong
+// giao dịch của chính action nên giữ `writeAudit` tại chỗ, dưới tên hành động chuẩn.
+
+// ─── Huỷ không bù ─────────────────────────────────────────────────────────────
+
+const lyDo = z
+  .string()
+  .trim()
+  .min(LY_DO_TOI_THIEU, `Ghi lý do ít nhất ${LY_DO_TOI_THIEU} ký tự`)
+  .max(500);
+const huySchema = z.object({ id: z.string().min(1), lyDo });
+
+/**
+ * HUỶ = buổi đó nghỉ luôn, không bù nữa (chốt 9: QLCS + Admin — "Giám đốc" là vai Admin, chốt 30/09; bắt buộc lý do).
+ * Dòng đã huỷ KHÔNG tự hồi sinh khi sửa điểm danh — `createMakeupNeed` tha `waivedAt`.
+ */
+export async function huyBuoiCanBuAction(input: { id: string; lyDo: string }): Promise<KetQuaCoNhac> {
+  const session = await auth();
+  if (!session?.user) return { ok: false, error: "Chưa đăng nhập" };
+  if (!(await checkPermission("makeup:waive"))) {
+    return { ok: false, error: "Chỉ Quản lý cơ sở / Admin được huỷ buổi cần bù" };
+  }
+  const p = huySchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+
+  // Chống IDOR ghi: đọc qua scopedDb — ngoài cơ sở của người bấm thì như không tồn tại.
+  const sdb = scopedDb(await resolveActor(session.user.id));
+  const need = await sdb.makeupNeed.findUnique({
+    where: { id: p.data.id },
+    select: { id: true, status: true, waivedAt: true, orgUnitId: true, studentId: true, missedSessionId: true, feeOrderItemId: true },
+  });
+  if (!need) return { ok: false, error: "Không tìm thấy buổi cần bù" };
+
+  const now = new Date();
+  const { actorId, actorName } = getAuditActor(session);
+  // Chuyển trạng thái CÓ ĐIỀU KIỆN + audit trong CÙNG giao dịch (T05): hai người bấm cùng lúc thì chỉ một lượt ăn, và dòng đã huỷ
+  // luôn có vết (bản cũ ghi audit SAU, ngoài giao dịch — lỗi giữa chừng để lại dòng huỷ không dấu vết).
+  try {
+    await sdb.$transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Prisma.TransactionClient;
+      await chuyenTrangThaiDong(tx, {
+        ids: [need.id],
+        tu: "PENDING",
+        sang: "CANCELLED",
+        lyDo: "HUY_KHONG_BU",
+        ngoai: { waivedAt: null },
+        them: { waivedAt: now, waivedById: session.user.id, waivedReason: p.data.lyDo },
+      });
+      await writeAudit({
+        actor: { id: actorId, name: actorName },
+        module: "hoc-bu",
+        entityType: "MakeupNeed",
+        entityId: need.id,
+        action: "hoc-bu.huy-dong",
+        oldValues: { status: need.status },
+        newValues: { status: "CANCELLED", waivedAt: now.toISOString() },
+        reason: p.data.lyDo,
+        orgUnitId: need.orgUnitId,
+        tx,
+      });
+    });
+  } catch (e) {
+    if (e instanceof LoiDong && e.ma === "DONG_DA_DOI") return { ok: false, error: "Buổi này đã được xử lý rồi — tải lại trang" };
+    throw e;
+  }
+
+  revalidatePath("/hoc-bu");
+  // HB-22 — huỷ KHÔNG tự hoàn tiền (quyết định của chủ dự án), nhưng đã thu phí thì phải NÓI RA: trước đây tiền nằm lại trên một đơn
+  // mà không dòng nào còn dùng, không ai thấy. Đọc SAU khi huỷ — phép huỷ không phụ thuộc vào phí, lỗi đọc không được làm hỏng nó.
+  const canhBao = await canhBaoPhiKhiHuy(need.feeOrderItemId).catch(() => null);
+  return canhBao ? { ok: true, canhBao } : { ok: true };
+}
+
+/**
+ * KHÔI PHỤC buổi đã huỷ (phụ huynh đổi ý muốn bù) — cùng quyền với huỷ. Lý do huỷ cũ giữ lại
+ * trong AuditLog; dòng quay về danh sách cần bù với lượt tính lại như thường.
+ */
+export async function khoiPhucBuoiCanBuAction(id: string): Promise<KetQua> {
+  const session = await auth();
+  if (!session?.user) return { ok: false, error: "Chưa đăng nhập" };
+  if (!(await checkPermission("makeup:waive"))) {
+    return { ok: false, error: "Chỉ Quản lý cơ sở / Admin được khôi phục buổi đã huỷ" };
+  }
+  const sdb = scopedDb(await resolveActor(session.user.id));
+  const need = await sdb.makeupNeed.findUnique({
+    where: { id },
+    select: { id: true, waivedReason: true, orgUnitId: true },
+  });
+  if (!need) return { ok: false, error: "Không tìm thấy buổi đã huỷ" };
+  const { actorId, actorName } = getAuditActor(session);
+  try {
+    await sdb.$transaction(async (txRaw) => {
+      const tx = txRaw as unknown as Prisma.TransactionClient;
+      await chuyenTrangThaiDong(tx, {
+        ids: [need.id],
+        tu: "CANCELLED",
+        sang: "PENDING",
+        lyDo: "KHOI_PHUC",
+        ngoai: { waivedAt: { not: null } },
+        them: { waivedAt: null, waivedById: null, waivedReason: null },
+      });
+      await writeAudit({
+        actor: { id: actorId, name: actorName },
+        module: "hoc-bu",
+        entityType: "MakeupNeed",
+        entityId: need.id,
+        action: "hoc-bu.khoi-phuc-dong",
+        oldValues: { status: "CANCELLED", waivedReason: need.waivedReason },
+        newValues: { status: "PENDING" },
+        reason: "Khôi phục buổi đã huỷ",
+        orgUnitId: need.orgUnitId,
+        tx,
+      });
+    });
+  } catch (e) {
+    if (e instanceof LoiDong && e.ma === "DONG_DA_DOI") return { ok: false, error: "Buổi này đã được xử lý rồi — tải lại trang" };
+    throw e;
+  }
+  revalidatePath("/hoc-bu");
+  return { ok: true };
+}
+
+// ─── Chọn case cho một nhóm bé ────────────────────────────────────────────────
+
+const idsSchema = z.array(z.string().min(1)).min(1, "Chưa chọn học viên nào").max(50);
+
+export type LuaChonCase =
+  | {
+      ok: true;
+      coSo: string;
+      khoa: string;
+      buoi: string;
+      be: { id: string; hocVien: string; cachXep: "Lượt bù" | "Đã thu phí" | "Miễn phí" }[];
+      /**
+       * `seChoDuyet` (24/10/2026): bấm "Xếp vào" case này chỉ GỬI YÊU CẦU chờ quản lý cơ sở duyệt (người bấm không có `makeup:waive` và nhóm có bé chưa trong case). Tính bằng ĐÚNG
+       * `quyetDinhThemVaoCase` mà máy chủ xếp dùng, nên nhãn nút không hứa điều máy chủ không làm.
+       */
+      caseCoSan: (DongCase & { seChoDuyet: boolean })[];
+      phong: { id: string; name: string; sucChua: number }[];
+      /** Bộ bài tối thiểu của case = các bài vắng của nhóm bé đã chọn (T07: case dạy cả bộ bài, tối đa 3). */
+      baiCuaNhom: { id: string; ten: string }[];
+      /**
+       * Bài có thể THÊM vào bộ bài: CHỈ bài mà chính các bé đã chọn cũng đang vắng chờ bù (20/10/2026 — trước đó là cả giáo trình của khoá). `be` = các bé sẽ được gộp vào bài đó.
+       * Rỗng khi bộ bài đã đủ 3 hoặc các bé không còn buổi vắng nào khác xếp được.
+       */
+      baiCoTheThem: { id: string; ten: string; be: string[] }[];
+      homNay: string;
+    }
+  | { ok: false; error: string };
+
+export async function layLuaChonCaseAction(needIds: string[]): Promise<LuaChonCase> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = idsSchema.safeParse(needIds);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  const sdb = scopedDb(n.actor);
+  const dong = await docDongTheoId(sdb, p.data, n.actor.chiCuaSale);
+  if (dong.length !== new Set(p.data).size) return { ok: false, error: "Có học viên đã được xếp/huỷ — tải lại trang" };
+  const nhom = kiemNhomNhieuBai(dong.map((d) => ({ centerId: d.centerId, courseId: d.courseId, lessonId: d.lessonId, hocVien: d.hocVien })));
+  if (!nhom.ok) return { ok: false, error: nhom.lyDo };
+  const chan = dong.find((d) => !d.xep.ok);
+  if (chan && !chan.xep.ok) return { ok: false, error: `${chan.hocVien}: ${chan.xep.lyDo}` };
+
+  const homNay = vnYmd(new Date());
+  const [caseCoSan, phong, coSo] = await Promise.all([
+    caseChoNhom(sdb, { centerId: nhom.centerId, courseId: nhom.courseId, lessonIds: nhom.lessonIds }, new Date(`${homNay}T00:00:00Z`)),
+    sdb.room.findMany({
+      where: { centerId: nhom.centerId, status: "ACTIVE" },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+      select: { id: true, name: true, capacity: true },
+    }),
+    sdb.center.findUnique({ where: { id: nhom.centerId }, select: { code: true, name: true } }),
+  ]);
+  const dau = dong[0]!;
+  // Case nào xếp vào sẽ phải chờ duyệt: đọc người tham gia ĐANG HỌC của các case ứng viên một lần, rồi hỏi đúng hàm quyết của máy chủ.
+  const coQuyenDuyet = await checkPermission("makeup:waive");
+  const nguoiThamGia = caseCoSan.length
+    ? await sdb.makeupCaseParticipant.findMany({
+        where: { caseId: { in: caseCoSan.map((c) => c.id) }, studentId: { in: dong.map((d) => d.studentId) } },
+        select: { caseId: true, studentId: true, attendanceStatus: true },
+      })
+    : [];
+  const caseCoSanKemDuyet = caseCoSan.map((c) => ({
+    ...c,
+    seChoDuyet:
+      quyetDinhThemVaoCase({
+        coQuyenDuyet,
+        soBeMoi: beMoiTrongLo(
+          dong.map((d) => d.studentId),
+          nguoiThamGia.filter((b) => b.caseId === c.id),
+        ).length,
+      }) === "CHO_DUYET",
+  }));
+  const baiCuaNhom = [...new Map(dong.filter((d) => d.lessonId).map((d) => [d.lessonId!, { id: d.lessonId!, ten: d.buoiVang ?? "Bài chưa gắn tên" }])).values()];
+  const conCho = TOI_DA_BAI_MOI_CASE - baiCuaNhom.length;
+  // Bài thêm = buổi VẮNG của chính các bé đã chọn (cùng định nghĩa "đang chờ bù" với tab Cần bù). Dòng không xếp được (hết lượt / phải thu phí) bị `gomDongCungBe` bỏ qua khi tạo
+  // case, nên bài chỉ toàn dòng như vậy sẽ dạy không ai — không đưa vào danh sách.
+  const dongKhac =
+    conCho > 0
+      ? await docDongCanBuTheoKhoa(sdb, {
+          centerId: nhom.centerId,
+          courseId: nhom.courseId,
+          chiCuaSale: n.actor.chiCuaSale,
+          studentIds: [...new Set(dong.map((d) => d.studentId))],
+          loaiTruBai: baiCuaNhom.map((b) => b.id),
+        })
+      : [];
+  const theoBai = new Map<string, { id: string; ten: string; be: Set<string> }>();
+  for (const d of dongKhac) {
+    if (!d.lessonId || !d.xep.ok) continue;
+    const bai = theoBai.get(d.lessonId) ?? { id: d.lessonId, ten: d.buoiVang ?? "Bài chưa gắn tên", be: new Set<string>() };
+    bai.be.add(d.hocVien);
+    theoBai.set(d.lessonId, bai);
+  }
+  return {
+    ok: true,
+    coSo: coSo?.code || coSo?.name || "—",
+    khoa: dau.khoa,
+    buoi: dau.buoiVang ?? "—",
+    be: dong.map((d) => ({
+      id: d.id,
+      hocVien: d.hocVien,
+      cachXep: d.phi.loai === "LUOT" ? "Lượt bù" : d.phi.loai === "DA_THU" ? "Đã thu phí" : "Miễn phí",
+    })),
+    caseCoSan: caseCoSanKemDuyet,
+    phong: phong.map((r) => ({ id: r.id, name: r.name, sucChua: r.capacity })),
+    baiCuaNhom,
+    baiCoTheThem: [...theoBai.values()].map((b) => ({ id: b.id, ten: b.ten, be: [...b.be].sort((x, y) => x.localeCompare(y, "vi")) })),
+    homNay,
+  };
+}
+
+/**
+ * PR6 lưới phân công GV (chủ dự án 24/10/2026): GV đang TRỰC được book học bù trong cùng ca ⇒ hỏi "còn trực phần còn lại không".
+ * `null`/vắng = chưa quyết ⇒ KHÔNG đụng dòng trực; lưới tự hiện CAN_QUYET_TRUC (mặc định an toàn cho mọi đường book).
+ */
+const quyetTrucSchema = z.object({ giu: z.boolean(), lyDo: z.string().trim().max(500).nullable() }).nullable().optional();
+
+/**
+ * Ghi quyết định trực SAU khi case đã là lịch thật. Cổng RIÊNG: quyết trực là việc phân công ⇒ `hr_attendance:assign` ở cơ sở của case (người
+ * có `makeup:manage` chưa chắc có). Thiếu quyền / case chưa là lịch thật / lỗi ⇒ KHÔNG chặn việc đã lưu của case, chỉ trả lời nhắn — quyết định
+ * còn lại hiện ở lưới cho QLCS.
+ */
+async function apQuyetTruc(caseId: string, q: z.infer<typeof quyetTrucSchema>, session: Session): Promise<string | undefined> {
+  if (!q) return undefined;
+  const centerId = await coSoCuaNguon({ sourceType: "MAKEUP_CASE", sourceId: caseId });
+  if (!centerId || !(await checkPermission("hr_attendance:assign", { centerId }))) {
+    return "Case đã lưu, nhưng bạn không có quyền phân công ở cơ sở này — quyết định trực để quản lý cơ sở xử lý trên lưới Phân công giáo viên.";
+  }
+  const actor = { id: session.user.id, name: session.user.name ?? session.user.email ?? "Quản lý" };
+  try {
+    const r = await trongGiaoDich((tx) => chotTrucKhiCoBu(tx, { caseId, giu: q.giu, lyDo: q.lyDo, actor, now: new Date() }));
+    if (!r.ok) return `Case đã lưu, nhưng chưa ghi được quyết định trực: ${r.loi}`;
+    revalidatePath("/cham-cong/phan-cong-gv");
+    return undefined;
+  } catch (e) {
+    console.error("[hoc-bu] ghi quyết định trực", e);
+    return "Case đã lưu, nhưng chưa ghi được quyết định trực — xử lý trên lưới Phân công giáo viên.";
+  }
+}
+
+const trucTrungSchema = z
+  .object({
+    needIds: idsSchema.optional(),
+    caseId: z.string().min(1).optional(),
+    teacherId: z.string().min(1),
+    ymd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  })
+  .refine((v) => v.needIds?.length || v.caseId, "Thiếu học viên / case");
+
+/**
+ * Ô "Giáo viên" vừa chọn: người đó có ca TRỰC chứa buổi bù không, và người đang thao tác có quyết được không (`makeup:waive` để case thành
+ * lịch thật ngay + `hr_attendance:assign` ở cơ sở). Hộp hỏi chỉ vẽ khi `coTheQuyet` (luật 12); action ghi kiểm lại.
+ */
+export async function layTrucTrungAction(
+  input: z.input<typeof trucTrungSchema>,
+): Promise<{ ok: true; truc: { shiftCode: string; tu: string; den: string } | null; coTheQuyet: boolean } | { ok: false; error: string }> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = trucTrungSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  const coSo = p.data.caseId
+    ? await coSoCuaNguon({ sourceType: "MAKEUP_CASE", sourceId: p.data.caseId })
+    : await docCoSoCuaDong(scopedDb(n.actor), p.data.needIds![0]!, n.actor.chiCuaSale);
+  if (!coSo) return { ok: false, error: "Không xác định được cơ sở" };
+  try {
+    const t = await trongGiaoDich((tx) =>
+      trucTrongCaCuaBuoi(tx, { userId: p.data.teacherId, ngay: p.data.ymd, gioBatDau: p.data.startTime, gioKetThuc: p.data.endTime, caseId: p.data.caseId ?? null }),
+    );
+    if (!t || t.daGiu) return { ok: true, truc: null, coTheQuyet: false };
+    const [duyet, phan] = await Promise.all([checkPermission("makeup:waive"), checkPermission("hr_attendance:assign", { centerId: coSo })]);
+    return { ok: true, truc: { shiftCode: t.shiftCode, tu: t.tu, den: t.den }, coTheQuyet: duyet && phan };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+const khungSchema = z.object({
+  needIds: idsSchema,
+  ymd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Chọn ngày dạy bù"),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Giờ bắt đầu không hợp lệ"),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Giờ kết thúc không hợp lệ"),
+});
+
+export async function layGvChoCaseAction(
+  input: z.input<typeof khungSchema>,
+): Promise<{ ok: true; ds: GvTrongCa[]; lyDoRong: string | null; goiY: GoiYGv | null } | { ok: false; error: string }> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = khungSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  // Cơ sở suy từ CHÍNH các dòng cần bù (không nhận centerId từ trình duyệt). `docCoSoCuaDong` — KHÔNG phải `docDongTheoId`: ở "Sửa case" dòng đã
+  // SCHEDULED (nằm trong case) nên `docDongTheoId` (chỉ PENDING) trả rỗng và không đổi được giáo viên bằng giao diện.
+  const coSo = await docCoSoCuaDong(scopedDb(n.actor), p.data.needIds[0]!, n.actor.chiCuaSale);
+  if (!coSo) return { ok: false, error: "Không xác định được cơ sở của học viên" };
+  try {
+    const khung = { centerId: coSo, ymd: p.data.ymd, startTime: p.data.startTime, endTime: p.data.endTime };
+    const gv = await gvTrongCa(n.actor, khung);
+    // GĐ5 tự xếp (công tắc theo cơ sở): CÙNG hàm mà đường ghi gọi lại (`goiYTuXepChoCase`) — màn chọn sẵn ai thì máy chủ nhận đúng người đó.
+    const g = await goiYTuXepChoCase(n.actor, khung, null, gv.ds);
+    const ten = (id: string) => gv.ds.find((x) => x.id === id)?.name ?? "giáo viên";
+    return { ok: true, ...gv, goiY: g.bat ? { userId: g.kq.userId, cau: cauGoiY(g, ten) } : null };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+/** Gợi ý tự xếp gửi về màn: `userId` null = không ai trực (đường lùi — chọn tay, QLCS được báo). */
+export type GoiYGv = { userId: string | null; cau: string | null };
+
+const taoCaseSchema = khungSchema.extend({
+  /** Bộ bài của case (1–3). Bỏ trống = đúng các bài vắng của các bé được chọn. */
+  lessonIds: z.array(z.string().min(1)).min(1).max(3).optional(),
+  roomId: z.string().min(1).nullable(),
+  teacherId: z.string().min(1, "Chọn giáo viên"),
+  note: z.string().trim().max(500).nullable(),
+  quyetTruc: quyetTrucSchema,
+});
+
+export async function taoCaseAction(
+  input: z.input<typeof taoCaseSchema>,
+): Promise<{ ok: true; caseId: string; choDuyet: boolean; canhBaoTruc?: string } | { ok: false; error: string; xungDot?: XungDotNhom[] }> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = taoCaseSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  if (p.data.ymd < vnYmd(new Date())) return { ok: false, error: "Ngày dạy bù không được ở quá khứ" };
+  // 20/10/2026: người KHÔNG có quyền duyệt (Sale…) tạo ra case CHỜ DUYỆT — quản lý cơ sở duyệt thì mới thành lịch thật và giáo viên mới thấy. Quyền thật, đọc ở đây một lần.
+  const coQuyenDuyet = await checkPermission("makeup:waive");
+  try {
+    const { quyetTruc, ...du } = p.data;
+    const caseId = await taoCaseVaXep(n.actor, { ...du, note: du.note || null, coQuyenDuyet });
+    xong(caseId);
+    // Case chờ duyệt chưa là lịch thật ⇒ chưa quyết trực (quyết lúc duyệt hoặc trên lưới).
+    const canhBaoTruc = coQuyenDuyet ? await apQuyetTruc(caseId, quyetTruc, n.session) : undefined;
+    return { ok: true, caseId, choDuyet: !coQuyenDuyet, canhBaoTruc };
+  } catch (e) {
+    return dichLoiXep(e, n.actor);
+  }
+}
+
+/** `choDuyet: true` ⇒ KHÔNG có bé nào được thêm vào case: lô có học viên khác, người bấm không có quyền duyệt, nên đã gửi YÊU CẦU chờ quản lý cơ sở duyệt (24/10/2026). */
+type KetQuaXepThem = { ok: true; choDuyet: boolean } | { ok: false; error: string; xungDot?: XungDotNhom[] };
+
+export async function xepVaoCaseAction(input: { caseId: string; needIds: string[]; moRongBai?: boolean }): Promise<KetQuaXepThem> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = z.object({ caseId: z.string().min(1), needIds: idsSchema, moRongBai: z.boolean().optional() }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  // 24/10/2026: thêm học viên KHÁC vào case có sẵn phải qua quản lý cơ sở duyệt. Quyền thật, đọc ở đây một lần — người không có quyền (Sale…) gửi yêu cầu thay vì thêm.
+  const coQuyenDuyet = await checkPermission("makeup:waive");
+  try {
+    const kq = await xepVaoCaseCoSan(n.actor, { ...p.data, coQuyenDuyet });
+    xong(p.data.caseId);
+    revalidatePath("/hoc-bu/duyet");
+    return { ok: true, choDuyet: kq.choDuyet };
+  } catch (e) {
+    return dichLoiXep(e, n.actor);
+  }
+}
+
+// ─── Duyệt / từ chối / rút yêu cầu thêm học viên vào case có sẵn (24/10/2026) ───────────────────────────────────────
+
+/** Quản lý cơ sở DUYỆT một lô yêu cầu ⇒ các bé được xếp vào case (đi đúng đường xếp trực tiếp, luật kiểm lại lúc này). Quyền `makeup:waive`. */
+export async function duyetThemBeAction(input: { batchId: string }): Promise<KetQua> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = z.object({ batchId: z.string().min(1) }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    await duyetYeuCauThemBe(n.actor, { batchId: p.data.batchId, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id });
+    xong();
+    revalidatePath("/hoc-bu/duyet");
+    return { ok: true };
+  } catch (e) {
+    return dichLoiXep(e, n.actor);
+  }
+}
+
+/** TỪ CHỐI một lô yêu cầu (bắt buộc lý do, người gửi thấy): case giữ nguyên, các dòng vẫn ở danh sách cần bù. */
+export async function tuChoiThemBeAction(input: { batchId: string; lyDo: string }): Promise<KetQua> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = z.object({ batchId: z.string().min(1), lyDo }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    await tuChoiYeuCauThemBe(n.actor, { batchId: p.data.batchId, lyDo: p.data.lyDo, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id });
+    xong();
+    revalidatePath("/hoc-bu/duyet");
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+/** Người GỬI rút lại yêu cầu còn chờ — các dòng cần bù được tự do trở lại. Quyền `makeup:manage` (cùng quyền gửi); máy chủ còn đòi đúng người gửi. */
+export async function rutThemBeAction(input: { batchId: string }): Promise<KetQua> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = z.object({ batchId: z.string().min(1) }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    await rutYeuCauThemBe(n.actor, { batchId: p.data.batchId, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id });
+    xong();
+    revalidatePath("/hoc-bu/duyet");
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+// ─── Thêm học viên / buổi vắng vào case ĐÃ TẠO (20/10/2026) ─────────────────────────────────────────────────
+
+export type UngVienCase =
+  | {
+      ok: true;
+      /** Số bài case đang dạy, và trần (`TOI_DA_BAI_MOI_CASE`) — giao diện tính "thêm dòng này có làm case vượt 3 bài không". */
+      soBaiCase: number;
+      tranBai: number;
+      /** Đã có bé điểm danh ⇒ không nới bộ bài nữa (cùng luật `suaCase`). */
+      daCoDiemDanh: boolean;
+      /** Danh sách bị cắt ở giới hạn đọc — nhắc người dùng dùng ô tìm. */
+      biCat: boolean;
+      /**
+       * Người xem CÓ quyền duyệt (`makeup:waive`) không. KHÔNG ⇒ thêm học viên khác chỉ là GỬI YÊU CẦU chờ quản lý cơ sở duyệt — hộp đổi nhãn nút + lời nhắc cho khớp (luật 12: không hứa
+       * "Đã thêm" khi máy chủ chỉ ghi một yêu cầu). Quyết định thật vẫn ở `xepVaoCaseCoSan`.
+       */
+      coQuyenDuyet: boolean;
+      ds: {
+        /** Mã dòng cần bù — chính là thứ `xepVaoCaseAction` nhận. */
+        id: string;
+        hocVien: string;
+        lop: string;
+        lessonId: string;
+        bai: string;
+        /** Bài này case ĐÃ dạy (không phải nới bộ bài). */
+        trongBoBai: boolean;
+        beTrongCase: boolean;
+        /** Lớp của dòng này có bé đang trong case ("cùng lớp"). */
+        trongLop: boolean;
+        cachXep: "Lượt bù" | "Đã thu phí" | "Miễn phí";
+        xepDuoc: boolean;
+        lyDo: string | null;
+      }[];
+    }
+  | { ok: false; error: string };
+
+const GIOI_HAN_UNG_VIEN = 300;
+
+/**
+ * `studentId` khai (nút "Thêm buổi" ở thẻ một bé) ⇒ chỉ buổi vắng của ĐÚNG bé đó; vẫn qua cùng phạm vi + cùng lý do khoá.
+ * Các dòng cần bù có thể THÊM vào một case đã tạo: cùng cơ sở + khoá, đang chờ bù (cùng định nghĩa tab Cần bù), trong phạm vi người xem. Mỗi dòng mang sẵn LÝ DO nếu xếp không được —
+ * tính bằng đúng `DongCanBu.xep` mà cổng ở máy chủ (`kiemDongXep`) dùng, nên nút "Thêm" ở màn không hứa điều máy chủ sẽ từ chối (luật 12). Hai luật riêng của việc thêm vào case
+ * (bé đã điểm danh · bài mới khi case đã có người điểm danh) cũng đi theo từng dòng; trần 3 bài là phép tính TỔ HỢP nên do giao diện tính, máy chủ vẫn chặn lần cuối.
+ */
+export async function layUngVienThemVaoCaseAction(caseId: string, studentId?: string): Promise<UngVienCase> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const id = z.string().min(1).safeParse(caseId);
+  const hv = z.string().min(1).optional().safeParse(studentId);
+  if (!id.success || !hv.success) return { ok: false, error: "Dữ liệu không hợp lệ" };
+  const sdb = scopedDb(n.actor);
+  const c = await sdb.makeupCase.findFirst({
+    where: { id: id.data, ...whereCase({ chiCuaSale: n.actor.chiCuaSale }) },
+    select: {
+      id: true,
+      status: true,
+      centerId: true,
+      courseId: true,
+      lessonId: true,
+      lessons: { select: { lessonId: true } },
+      participants: { select: { studentId: true, attendanceStatus: true } },
+      students: { where: { result: { not: "RELEASED" } }, select: { makeupNeed: { select: { classId: true } } } },
+    },
+  });
+  if (!c) return { ok: false, error: "Không tìm thấy case dạy bù" };
+  if (c.status !== "SCHEDULED") return { ok: false, error: "Case đã điểm danh xong hoặc đã huỷ — không thêm học viên được nữa" };
+
+  const baiCase = new Set(c.lessons.length > 0 ? c.lessons.map((l) => l.lessonId) : [c.lessonId]);
+  const beTrongCase = new Set(c.participants.filter((b) => b.attendanceStatus !== "REMOVED").map((b) => b.studentId));
+  const beDaDiemDanh = new Set(c.participants.filter((b) => b.attendanceStatus === "PRESENT" || b.attendanceStatus === "ABSENT").map((b) => b.studentId));
+  const lopTrongCase = new Set(c.students.map((m) => m.makeupNeed.classId));
+  const daCoDiemDanh = beDaDiemDanh.size > 0;
+
+  const dong = await docDongCanBuTheoKhoa(sdb, { centerId: c.centerId, courseId: c.courseId, chiCuaSale: n.actor.chiCuaSale, studentIds: hv.data ? [hv.data] : undefined, take: GIOI_HAN_UNG_VIEN });
+  const ds = dong
+    .filter((d): d is typeof d & { lessonId: string } => !!d.lessonId)
+    .map((d) => {
+      const trongBoBai = baiCase.has(d.lessonId);
+      const lyDo = !d.xep.ok
+        ? d.xep.lyDo
+        : beDaDiemDanh.has(d.studentId)
+          ? "Bé này đã điểm danh trong case — không thêm buổi bù cho bé được nữa"
+          : !trongBoBai && daCoDiemDanh
+            ? "Bài này case chưa dạy, mà case đã có bé điểm danh — không thêm bài mới được"
+            : null;
+      return {
+        id: d.id,
+        hocVien: d.hocVien,
+        lop: d.lop,
+        lessonId: d.lessonId,
+        bai: d.buoiVang ?? "Bài chưa gắn tên",
+        trongBoBai,
+        beTrongCase: beTrongCase.has(d.studentId),
+        trongLop: lopTrongCase.has(d.classId),
+        cachXep: (d.phi.loai === "LUOT" ? "Lượt bù" : d.phi.loai === "DA_THU" ? "Đã thu phí" : "Miễn phí") as "Lượt bù" | "Đã thu phí" | "Miễn phí",
+        xepDuoc: lyDo === null,
+        lyDo,
+      };
+    })
+    // Bé đã trong case lên đầu (thêm buổi vắng khác của họ), rồi cùng lớp, rồi theo lớp · tên · bài.
+    .sort(
+      (a, b) =>
+        Number(b.beTrongCase) - Number(a.beTrongCase) ||
+        Number(b.trongLop) - Number(a.trongLop) ||
+        a.lop.localeCompare(b.lop, "vi") ||
+        a.hocVien.localeCompare(b.hocVien, "vi") ||
+        a.bai.localeCompare(b.bai, "vi"),
+    );
+  return { ok: true, soBaiCase: baiCase.size, tranBai: TOI_DA_BAI_MOI_CASE, daCoDiemDanh, biCat: dong.length >= GIOI_HAN_UNG_VIEN, coQuyenDuyet: await checkPermission("makeup:waive"), ds };
+}
+
+// ─── Trong case ───────────────────────────────────────────────────────────────
+
+export async function goKhoiCaseAction(input: { caseId: string; caseStudentId: string }): Promise<KetQua> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  try {
+    await goKhoiCase(n.actor, input.caseStudentId);
+    xong(input.caseId);
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+/** PHIẾU nhận xét một bài (T16b): đánh giá chung ≤ 2000 ký tự (được trống nếu có bảng năng lực) + bảng 9 tiêu chí mức 1–5. */
+const phieuSchema = z.object({
+  caseId: z.string().min(1),
+  caseStudentId: z.string().min(1),
+  danhGia: z.string().trim().max(2000),
+  rubric: z.record(z.string().min(1), z.number().int().min(1).max(5)).optional(),
+});
+
+/**
+ * PHIẾU nhận xét một bài của bé ở buổi bù — lưu ở MỤC của case (T07), cho cả bé đã được điểm danh (sửa lời đánh giá không cần sửa điểm danh). Giáo viên thường chỉ case MÌNH dạy
+ * (`chiGv`). Chỉ bài đã có kết quả mới đánh giá được — luật ở `ghiDanhGiaMuc`.
+ */
+export async function danhGiaMucAction(input: z.input<typeof phieuSchema>): Promise<KetQua> {
+  const n = await cong("makeup:attend");
+  if (!n.ok) return n;
+  const p = phieuSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    await ghiDanhGiaMuc(n.actor, {
+      caseStudentId: p.data.caseStudentId,
+      danhGia: p.data.danhGia,
+      rubric: p.data.rubric,
+      chiGiaoVien: n.chiGv,
+      ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id,
+    });
+    xong(p.data.caseId);
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+const ketQuaMucSchema = z.record(
+  z.string().min(1),
+  z.object({ ketQua: z.enum(["COMPLETED", "NOT_COMPLETED"]), danhGia: z.string().trim().max(2000).nullable() }),
+);
+
+/** Lý do ghi vào audit khi người có `makeup:waive` điểm danh quá hạn mà không tự nhập (≥ 10 ký tự — cổng của dịch vụ). */
+const LY_DO_QUAN_LY_QUA_HAN = "Quản lý cơ sở / Admin điểm danh quá hạn 3 ngày (tự động, không hỏi lý do)";
+
+async function ghiDeTuInput(n: Extract<Ngu, { ok: true }>, ghiDe: { lyDo: string } | undefined) {
+  // Ghi đè là quyền RIÊNG (quản lý cơ sở trở lên), không phải quyền điểm danh thường.
+  const duocGhiDe = await checkPermission("makeup:waive");
+  // Người KHÔNG có quyền: không gửi ghi đè thì đi tiếp như thường (bị cổng cửa sổ giờ chặn nếu quá hạn); cố gửi thì từ chối.
+  if (!duocGhiDe) {
+    if (!ghiDe) return { ok: true as const, ghiDe: undefined };
+    return { ok: false as const, error: "Bạn không có quyền ghi đè điểm danh quá hạn" };
+  }
+  // Chủ dự án 18/10/2026: Admin / Quản lý cơ sở điểm danh buổi bù ở BẤT KỲ ngày nào — không bắt bấm ghi đè hay nhập lý do. Dịch vụ chỉ ghi
+  // audit "quá hạn" khi thật sự quá hạn, nên luôn truyền `ghiDe` cho người có quyền không làm audit thừa cho ca trong hạn.
+  const lyDoNhap = ghiDe?.lyDo.trim() ?? "";
+  return {
+    ok: true as const,
+    ghiDe: { lyDo: lyDoNhap.length >= 10 ? lyDoNhap : LY_DO_QUAN_LY_QUA_HAN, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id },
+  };
+}
+
+const diemDanhBeSchema = z.object({
+  caseId: z.string().min(1),
+  participantId: z.string().min(1),
+  coMat: z.boolean(),
+  ketQuaMuc: ketQuaMucSchema,
+  nhanXetChung: z.string().trim().max(2000).nullable(),
+  ghiDe: z.object({ lyDo: z.string() }).optional(),
+});
+
+/** Điểm danh LẦN ĐẦU một bé ở buổi bù — tầng 1 (có mặt / vắng) + tầng 2 (từng bài xong hay chưa) trong một lần lưu. */
+export async function diemDanhBeAction(input: z.input<typeof diemDanhBeSchema>): Promise<KetQua> {
+  const n = await cong("makeup:attend");
+  if (!n.ok) return n;
+  const p = diemDanhBeSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  const gd = await ghiDeTuInput(n, p.data.ghiDe);
+  if (!gd.ok) return gd;
+  try {
+    await diemDanhBe(n.actor, {
+      participantId: p.data.participantId,
+      coMat: p.data.coMat,
+      ketQuaMuc: p.data.coMat ? p.data.ketQuaMuc : {},
+      nhanXetChung: p.data.nhanXetChung,
+      ghiDe: gd.ghiDe,
+      chiGiaoVien: n.chiGv,
+    });
+    xong(p.data.caseId);
+    revalidatePath("/attendance");
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+const suaDiemDanhBeSchema = diemDanhBeSchema.extend({ phienBan: z.number().int().min(0), lyDo: z.string() });
+
+/** SỬA điểm danh một bé (đảo được, có audit) — kể cả chuyển từ có mặt sang vắng: lượt đã tiêu được trả lại. */
+export async function suaDiemDanhBeAction(input: z.input<typeof suaDiemDanhBeSchema>): Promise<KetQua> {
+  const n = await cong("makeup:attend");
+  if (!n.ok) return n;
+  const p = suaDiemDanhBeSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  const gd = await ghiDeTuInput(n, p.data.ghiDe);
+  if (!gd.ok) return gd;
+  try {
+    await suaDiemDanhBe(n.actor, {
+      participantId: p.data.participantId,
+      coMat: p.data.coMat,
+      ketQuaMuc: p.data.coMat ? p.data.ketQuaMuc : {},
+      nhanXetChung: p.data.nhanXetChung,
+      phienBan: p.data.phienBan,
+      lyDo: p.data.lyDo,
+      ghiDe: gd.ghiDe,
+      chiGiaoVien: n.chiGv,
+      ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id,
+    });
+    xong(p.data.caseId);
+    revalidatePath("/attendance");
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+/** Gỡ CẢ BÉ (mọi bài còn sống) khỏi case chưa điểm danh. */
+export async function goBeKhoiCaseAction(input: { caseId: string; participantId: string }): Promise<KetQua> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  try {
+    await goBeKhoiCase(n.actor, input.participantId);
+    xong(input.caseId);
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+const suaCaseSchema = z.object({
+  caseId: z.string().min(1),
+  phienBan: z.number().int().min(0),
+  ymd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  teacherId: z.string().min(1).optional(),
+  roomId: z.string().min(1).nullable().optional(),
+  lessonIds: z.array(z.string().min(1)).min(1).max(3).optional(),
+  note: z.string().trim().max(500).nullable().optional(),
+  quyetTruc: quyetTrucSchema,
+});
+
+/** SỬA case chưa điểm danh: ngày · giờ · giáo viên · phòng · bộ bài (khoá lạc quan theo phiên bản). */
+export async function suaCaseAction(input: z.input<typeof suaCaseSchema>): Promise<KetQua> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  const p = suaCaseSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    const { quyetTruc, ...du } = p.data;
+    await suaCase(n.actor, { ...du, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id });
+    xong(p.data.caseId);
+    return { ok: true, canhBaoTruc: await apQuyetTruc(p.data.caseId, quyetTruc, n.session) };
+  } catch (e) {
+    return dichLoiXep(e, n.actor);
+  }
+}
+
+/** Quản lý gửi bài kiểm tra bù thay giáo viên (cùng quyền điểm danh/nhận xét bù). */
+export async function guiBaiKiemTraBuAction(p: {
+  caseId: string;
+  examId: string;
+}): Promise<{ ok: true; soBe: number } | { ok: false; error: string }> {
+  const n = await cong("makeup:attend");
+  if (!n.ok) return n;
+  // Case phải nằm trong tầm nhìn cơ sở của người bấm.
+  const c = await scopedDb(n.actor).makeupCase.findUnique({ where: { id: p.caseId }, select: { id: true } });
+  if (!c) return { ok: false, error: "Không tìm thấy case dạy bù" };
+  try {
+    const r = await guiBaiKiemTraBu({ caseId: p.caseId, examId: p.examId, byUserId: n.actor.userId, chiGiaoVien: n.chiGv ?? null, now: new Date() });
+    xong(p.caseId);
+    return { ok: true, soBe: r.soBe };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+export async function huyCaseAction(caseId: string): Promise<KetQua> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  try {
+    await huyCase(n.actor, caseId);
+    xong(caseId);
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+// ─── Duyệt case chờ duyệt (20/10/2026) ──────────────────────────────────────────
+
+const duyetCaseSchema = z.object({
+  caseId: z.string().min(1),
+  /** Phiên bản case lúc người duyệt mở hộp — người khác sửa trong lúc đó thì từ chối thay vì duyệt một bản đã đổi. */
+  phienBan: z.number().int().min(0),
+  /** Đổi giáo viên / phòng lúc duyệt (bỏ trống = giữ nguyên). */
+  teacherId: z.string().min(1).optional(),
+  roomId: z.string().min(1).nullable().optional(),
+  quyetTruc: quyetTrucSchema,
+});
+
+/** Quản lý cơ sở DUYỆT case chờ duyệt ⇒ lịch thật; giáo viên + phụ huynh được báo từ lúc này. Quyền `makeup:waive` (cùng quyền miễn phí / huỷ buổi cần bù). */
+export async function duyetCaseAction(input: z.input<typeof duyetCaseSchema>): Promise<KetQua> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = duyetCaseSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    const { quyetTruc, ...du } = p.data;
+    await duyetCase(n.actor, { ...du, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id });
+    xong(p.data.caseId);
+    return { ok: true, canhBaoTruc: await apQuyetTruc(p.data.caseId, quyetTruc, n.session) };
+  } catch (e) {
+    return dichLoiXep(e, n.actor);
+  }
+}
+
+/** TỪ CHỐI case chờ duyệt (bắt buộc lý do, hiện cho người tạo ở màn case) ⇒ case huỷ, các bé quay lại danh sách cần bù. */
+export async function tuChoiCaseAction(input: { caseId: string; lyDo: string }): Promise<KetQua> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = z.object({ caseId: z.string().min(1), lyDo }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    await huyCase(n.actor, p.data.caseId, new Date(), { lyDo: p.data.lyDo, ten: n.session.user.name ?? n.session.user.email ?? n.session.user.id });
+    xong(p.data.caseId);
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+/** Lựa chọn trong hộp "Duyệt": giáo viên CÓ CA phủ khung giờ của case (cùng `gvTrongCa` mà ô chọn lúc tạo và cổng ở máy chủ dùng) + phòng đang mở của cơ sở. */
+export type LuaChonDuyet = {
+  /** Khung giờ case — hộp duyệt hỏi lại trực khi đổi giáo viên (PR6). */
+  ymd: string;
+  startTime: string;
+  endTime: string;
+  teacherId: string;
+  roomId: string | null;
+  /** Trực của giáo viên đang giữ case (PR6) — tính ở máy chủ lúc mở hộp, không gọi thêm lượt nào lúc vẽ. */
+  truc: { shiftCode: string; tu: string; den: string } | null;
+  coTheQuyetTruc: boolean;
+  gv: GvTrongCa[];
+  lyDoGvRong: string | null;
+  phong: { id: string; name: string; sucChua: number | null }[];
+};
+export async function layLuaChonDuyetAction(caseId: string): Promise<({ ok: true } & LuaChonDuyet) | { ok: false; error: string }> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const sdb = scopedDb(n.actor);
+  const c = await sdb.makeupCase.findUnique({
+    where: { id: caseId },
+    select: { status: true, centerId: true, date: true, startTime: true, endTime: true, teacherId: true, roomId: true },
+  });
+  if (!c) return { ok: false, error: "Không tìm thấy case dạy bù" };
+  if (c.status !== "PENDING_APPROVAL") return { ok: false, error: "Case này không còn chờ duyệt — tải lại trang" };
+  try {
+    const ymdCase = c.date.toISOString().slice(0, 10);
+    const [gv, phong, trucGv, coPhan] = await Promise.all([
+      gvTrongCa(n.actor, { centerId: c.centerId, ymd: ymdCase, startTime: c.startTime, endTime: c.endTime }),
+      sdb.room.findMany({ where: { centerId: c.centerId, status: "ACTIVE" }, orderBy: [{ displayOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, capacity: true } }),
+      c.teacherId
+        ? trongGiaoDich((tx) => trucTrongCaCuaBuoi(tx, { userId: c.teacherId!, ngay: ymdCase, gioBatDau: c.startTime, gioKetThuc: c.endTime, caseId }))
+        : Promise.resolve(null),
+      checkPermission("hr_attendance:assign", { centerId: c.centerId }),
+    ]);
+    return {
+      ok: true,
+      truc: trucGv && !trucGv.daGiu ? { shiftCode: trucGv.shiftCode, tu: trucGv.tu, den: trucGv.den } : null,
+      coTheQuyetTruc: coPhan,
+      ymd: ymdCase,
+      startTime: c.startTime,
+      endTime: c.endTime,
+      teacherId: c.teacherId,
+      roomId: c.roomId,
+      gv: gv.ds,
+      lyDoGvRong: gv.lyDoRong,
+      phong: phong.map((r) => ({ id: r.id, name: r.name, sucChua: r.capacity })),
+    };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+// ─── Phí bù / miễn phí ngoại lệ ────────────────────────────────────────────────
+
+export async function taoPhiBuAction(needId: string): Promise<{ ok: true; orderId: string } | { ok: false; error: string }> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  // T10: phí bù là MỘT ĐƠN HÀNG (đơn + phiếu thu + mã QR) — ai tạo được đơn mới được tạo phí. Dùng quyền có sẵn `orders:create` (không quyền mới):
+  // quản lý lớp có `makeup:manage` nhưng không có quyền tạo đơn thì không còn tự tạo được phí (nhờ Sale / quản lý cơ sở).
+  if (!(await checkPermission("orders:create"))) return { ok: false, error: "Bạn không có quyền tạo đơn hàng — nhờ quản lý cơ sở hoặc tư vấn tạo phí bù" };
+  try {
+    const r = await taoPhiBu(n.actor, needId);
+    xong();
+    return { ok: true, orderId: r.orderId };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+export async function mienPhiBuAction(input: { needId: string; lyDo: string }): Promise<KetQua> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = z.object({ needId: z.string().min(1), lyDo }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    const { actorName } = getAuditActor(n.session);
+    await mienPhiBu(n.actor, { ...p.data, ten: actorName });
+    xong();
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+/** GỠ miễn phí (T06) — người duyệt đổi ý; cùng quyền với miễn phí. Dòng đã xếp vào case thì phải gỡ khỏi case trước. */
+export async function goMienPhiBuAction(input: { needId: string; lyDo: string }): Promise<KetQua> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = z.object({ needId: z.string().min(1), lyDo }).safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    const { actorName } = getAuditActor(n.session);
+    await goMienPhiBu(n.actor, { needId: p.data.needId, lyDo: p.data.lyDo, ten: actorName });
+    xong();
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+const capLuotSchema = z.object({
+  needId: z.string().min(1),
+  // delta > 0 = cấp thêm, < 0 = giảm; 0 vô nghĩa. Trần lấy từ MỘT hằng, chặn cả hai chiều ngay ở schema (không chỉ ở dịch vụ).
+  delta: z.number().int().min(-TOI_DA_LUOT_MOI_LAN).max(TOI_DA_LUOT_MOI_LAN).refine((n) => n !== 0, "Số lượt phải khác 0"),
+  lyDo,
+  maLanCap: z.string().min(1).max(64),
+});
+
+/**
+ * CẤP THÊM hoặc GIẢM lượt học bù cho học viên của một dòng cần bù (22/10/2026; `delta` > 0 cấp, < 0 giảm — chủ dự án: "cấp được thì xoá lại được") — cộng dồn từng lần, có lý do, ghi nhật ký. Quyền `makeup:waive`: cùng quyền với miễn phí
+ * ngoại lệ / huỷ buổi cần bù (quyết định về quyền lợi học viên của Quản lý cơ sở / Admin). `maLanCap` do hộp thoại sinh mỗi lần mở: gửi lại cùng mã không cấp hai lần.
+ */
+export async function capThemLuotAction(input: z.input<typeof capLuotSchema>): Promise<({ ok: true; daDoi: boolean; apThucTe: number } | { ok: false; error: string })> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = capLuotSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    const { actorName } = getAuditActor(n.session);
+    const r = await capThemLuot(n.actor, { ...p.data, ten: actorName });
+    xong();
+    return { ok: true, daDoi: r.daDoi, apThucTe: r.apThucTe };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+// ─── QLCS tạo dòng cần bù THEO YÊU CẦU phụ huynh (21/10/2026) ─────────────────────────────────────────────────────────
+// Gói vào lớp từ buổi kế tiếp / học vượt quá trần n: không bù gì nếu phụ huynh không yêu cầu; có yêu cầu thì QLCS tạo và TỰ CHỌN tính phí hay không.
+// Quyết định tiền của QLCS ⇒ cùng quyền với miễn phí ngoại lệ (`makeup:waive`), cho CẢ hai lựa chọn.
+
+export type BuoiDeBuView = { sessionId: string; ngay: string; lop: string; daCoDong: boolean };
+
+export async function layBuoiDeBuAction(studentId: string): Promise<{ ok: true; buoi: BuoiDeBuView[]; toiDa: number } | { ok: false; error: string }> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  if (!studentId) return { ok: false, error: "Thiếu học viên" };
+  try {
+    const buoi: BuoiDeBu[] = await docBuoiDeBu(n.actor, studentId);
+    return { ok: true, buoi: buoi.map((b) => ({ sessionId: b.sessionId, ngay: vnYmd(b.date), lop: b.lop, daCoDong: b.daCoDong })), toiDa: TOI_DA_BUOI_MOI_YEU_CAU };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+const yeuCauSchema = z.object({
+  studentId: z.string().min(1),
+  sessionIds: z.array(z.string().min(1)).min(1).max(TOI_DA_BUOI_MOI_YEU_CAU),
+  chonPhi: z.enum(["TINH_PHI", "KHONG_TINH_PHI"]),
+  lyDo,
+});
+
+export async function taoBuTheoYeuCauAction(input: z.input<typeof yeuCauSchema>): Promise<({ ok: true } & KetQuaYeuCau) | { ok: false; error: string }> {
+  const n = await cong("makeup:waive");
+  if (!n.ok) return n;
+  const p = yeuCauSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: p.error.issues[0]?.message ?? "Dữ liệu không hợp lệ" };
+  try {
+    const { actorName } = getAuditActor(n.session);
+    const r = await taoDongBuTheoYeuCau(n.actor, { ...p.data, ten: actorName });
+    xong();
+    return { ok: true, ...r };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}
+
+// ─── "Vì sao còn x/y lượt?" ────────────────────────────────────────────────────────────────────────────────────────────
+
+export type BienLaiLuotView =
+  | { ok: true; coSo: boolean; tomTat: string; dong: DongGiaiThich[]; biCat: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Giải thích số lượt của một dòng cần bù bằng CHÍNH sổ lượt (bút toán thật), không bằng công thức suy ngược. Phạm vi như danh sách: Sale chỉ học viên mình phụ trách;
+ * dòng ngoài phạm vi hiện như không tồn tại (không lộ sổ của học viên ngoài tầm).
+ */
+export async function layBienLaiLuotAction(needId: string): Promise<BienLaiLuotView> {
+  const session = await auth();
+  if (!session?.user) return { ok: false, error: "Chưa đăng nhập" };
+  if (!(await checkPermission("makeup:view"))) return { ok: false, error: "Bạn không có quyền xem học bù" };
+  const xemTatCa = await checkPermission("makeup:view-all");
+  const id = z.string().min(1).safeParse(needId);
+  if (!id.success) return { ok: false, error: "Dữ liệu không hợp lệ" };
+  const [d] = await docDongTheoId(scopedDb(await resolveActor(session.user.id)), [id.data], xemTatCa ? null : session.user.id);
+  if (!d) return { ok: false, error: "Không tìm thấy buổi cần bù" };
+  const bl = await docBienLaiLuot({ studentId: d.studentId, courseId: d.courseId });
+  if (!bl.coSo) {
+    return {
+      ok: true,
+      coSo: false,
+      tomTat: `Chưa mở sổ lượt cho ${d.hocVien}: số lượt đang tính theo công thức của khoá — còn ${d.luot.con}/${d.luot.tong}. Sổ được mở ngay khi bé được xếp vào case đầu tiên.`,
+      dong: [],
+      biCat: false,
+    };
+  }
+  const g = giaiThichLuot(bl.so, bl.bieuGhi);
+  return { ok: true, coSo: true, tomTat: g.tomTat, dong: g.dong, biCat: bl.biCat };
+}
+
+// ─── Nâng cấp case đời cũ ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Nâng MỘT case đời cũ lên mô hình nhiều bài (nút ở màn chi tiết). Idempotent; case đã nâng thì không đổi gì. */
+export async function nangCapCaseAction(caseId: string): Promise<KetQua> {
+  const n = await cong("makeup:manage");
+  if (!n.ok) return n;
+  try {
+    await nangCapCaseTheoYeuCau(n.actor, caseId);
+    xong(caseId);
+    return { ok: true };
+  } catch (e) {
+    return dichLoi(e);
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "name": "intake-with-consent",
+  "description": "Khách nói rõ 'được liên hệ lại'. consent chỉ gửi khi có tin nhắn bằng chứng.",
+  "validates": {
+    "request": "LeadIntakeRequest",
+    "requestExpect": "VALID",
+    "response": "LeadIntakeResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/lead-intakes",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "ENROLLMENT_REQUEST:446c7f3212623de589cd5b7c3193dff031b2bba4:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "intent": "ENROLLMENT_REQUEST",
+      "candidate": {
+        "phoneRaw": "+84905123456",
+        "campusCode": "CS2",
+        "consent": {
+          "contactAllowed": true,
+          "messageMid": "m_TEST_consent_0007"
+        }
+      },
+      "evidence": {
+        "phoneMessageMid": "m_TEST_phone_0007",
+        "campusMessageMid": "m_TEST_campus_0007"
+      },
+      "catalogVersion": 7,
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_a7b8c9d0e1f2a7",
+        "status": "ACCEPTED",
+        "nextAction": "ACKNOWLEDGE_GENERIC"
+      },
+      "meta": {
+        "requestId": "req_test00000017ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "ENROLLMENT_REQUEST",
+    "seed": "m_TEST_0007",
+    "v": 1
+  }
+}
