@@ -1,0 +1,7 @@
+/* IN / LƯU THÀNH PDF kết quả (nút «Tải bản PDF» mở hộp thoại in của trình duyệt): chỉ in khối kết quả [03], ẩn mọi thứ còn lại. Viết tay, KHÔNG có trong artifact. */
+@media print {
+  body * { visibility: hidden !important; }
+  #sk-kq, #sk-kq * { visibility: visible !important; }
+  #sk-kq { position: absolute !important; left: 0; top: 0; width: 100% !important; background: #fff !important; color: #111 !important; }
+  #sk-kq .sk-toast, #sk-kq button { display: none !important; }
+}

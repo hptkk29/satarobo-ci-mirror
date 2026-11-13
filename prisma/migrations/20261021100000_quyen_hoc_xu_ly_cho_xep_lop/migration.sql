@@ -1,0 +1,14 @@
+-- "Thu học phí theo phạm vi học" — PR xếp lớp → buổi bắt đầu của học viên. CHỈ THÊM MỘT GIÁ TRỊ ENUM.
+--
+--   CHO_XEP_LOP — dòng đơn SCOPE ĐÃ có ghi danh nhưng quyền học CHƯA chốt được phạm vi bài: chưa có quyền học hợp lệ
+--   (tiền chưa xác nhận đủ), hoặc đã có quyền học mà máy KHÔNG ĐƯỢC PHÉP đoán bài bắt đầu (lớp hết buổi, buổi sớm nhất
+--   chưa ghim giáo trình, phạm vi vượt giáo trình, ghi danh mơ hồ), hoặc đã xếp nhưng còn việc người phải xem (buổi học
+--   vượt không gắn được vào buổi đã dạy của lớp). Quyền học GIỮ NGUYÊN AWAITING_PLACEMENT cho tới khi xếp được.
+--
+-- Vì sao phải thêm giá trị MỚI thay vì dùng lại TREO_DUYET_TAY / CHO_CHUYEN_DOI: khoá duy nhất là (orderItemId, loai) và
+-- `cap-tu-don.ts` ĐÓNG hai loại cũ mỗi lượt chạy khi tiền đủ ("tiền đã đủ lại" / "đã có quyền học") — một dòng treo xếp lớp
+-- mượn loại cũ sẽ bị chính đường cấp quyền đóng ngay lượt hích kế tiếp.
+--
+-- ADDITIVE, chạy lại được (IF NOT EXISTS). Giá trị mới chưa dùng được trong cùng giao dịch — migration này KHÔNG dùng nó,
+-- không backfill, không UPDATE/DELETE dòng nào. Bảng `StudyEntitlementXuLy` vẫn rỗng cho tới khi cờ được bật.
+ALTER TYPE "EntitlementXuLyLoai" ADD VALUE IF NOT EXISTS 'CHO_XEP_LOP';

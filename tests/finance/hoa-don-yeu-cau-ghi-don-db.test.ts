@@ -1,0 +1,463 @@
+// Ca [YCW-*] — PHỤ HUYNH GỬI FORM QR ⇒ GHI THẲNG VÀO ĐƠN (chủ dự án chốt 03/11/2026) TRÊN POSTGRES THẬT.
+//
+// Canh những thứ test thuần không chứng minh được (chúng là chuỗi: bản điền sẵn → form → dịch vụ → giao dịch → cột của đơn):
+//   · điền sẵn lấy từ ĐƠN → hồ sơ học viên, KHÔNG BAO GIỜ có hai ô CCCD dù hồ sơ có; loại mặc định CÁ NHÂN;
+//   · PH gửi ⇒ các ô PH ĐỔI so với bản điền sẵn vào ĐÚNG cột của đơn ngay (cùng giao dịch); ô PH không đụng thì KHÔNG đè lên chỉnh sửa của Sale làm giữa chừng;
+//   · ai ghi sau thì thắng (cả hai chiều), địa chỉ có cấu trúc không bị dồn thành một chuỗi khi PH không sửa;
+//   · đơn đang DANG_PHAT_HANH ⇒ KHÔNG ghi đơn (dữ liệu PH vẫn nằm trên yêu cầu); nhật ký của đơn chỉ nêu TÊN cột;
+//   · SĐT khách (`customerPhone`, chìa đối khớp tiền) không bao giờ bị PH ghi đè.
+// Không gọi `resetDb()`: fixture tự dựng + tự dọn theo tiền tố `fx-ycw-`.
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import type { Actor } from "@/lib/auth/actor";
+import { db } from "@/lib/db";
+import { RUN_DB_TESTS, LY_DO_BO_QUA } from "@/tests/_helpers/db-gate";
+import type { GioiHanChongDoan } from "@/lib/finance/hoa-don/yeu-cau-nguoi-mua";
+import { guiThongTinPhuHuynh, moBangToken, taoYeuCau, type KetQuaTao } from "@/lib/finance/hoa-don/yeu-cau-nguoi-mua-db";
+
+if (!RUN_DB_TESTS) console.warn(`[YCW] BỎ QUA bộ chạm DB: ${LY_DO_BO_QUA}`);
+
+const T = "fx-ycw-";
+const CS1 = `${T}cs1`;
+const DON1 = `${T}don1`;
+const HS = `${T}hs`;
+const NOW = new Date("2026-11-03T03:00:00.000Z");
+const CS_KHAC = `${T}cs-khac`;
+const LEAD_HS = `${T}lead-hs`;
+const HV_ID = { hai: `${T}hv-hai`, ba: `${T}hv-ba`, trung1: `${T}hv-trung1`, trung2: `${T}hv-trung2`, laNguoi: `${T}hv-la`, coSoKhac: `${T}hv-cs-khac` } as const;
+const G: GioiHanChongDoan = { toiDaSaiToken: 5, toiDaLanMo: 50, khoaPhut: 15 };
+const CCCD_PH = "048123456789";
+const CCCD_HS_HOSO = "048999888777"; // CCCD học viên CÓ trong hồ sơ — không bao giờ được điền sẵn
+const CCCD_PH_HOSO = "048111222333"; // CCCD ba/mẹ CÓ trong hồ sơ — không bao giờ được điền sẵn
+
+const KT1 = {
+  userId: `${T}kt1`,
+  isSuperAdmin: false,
+  isHoLevel: false,
+  orgRoles: [],
+  permissions: [{ action: "payments:confirm", scopeType: "GLOBAL", orgUnitId: "ou", roleCode: "X", centerScope: [CS1] }],
+  visibleCenterIds: [],
+  visibleOrgUnitIds: [],
+  grantsAllow: new Set<string>(),
+  assignedClassIds: new Set<string>(),
+} as unknown as Actor;
+const ng = { id: KT1.userId, name: "Kế toán YCW" };
+
+async function don() {
+  const ids = (await db.hoaDonYeuCauNguoiMua.findMany({ where: { orderId: { startsWith: T } }, select: { id: true } })).map((x) => x.id);
+  await db.auditLog.deleteMany({ where: { OR: [{ entityType: "HoaDonYeuCauNguoiMua", entityId: { in: ids } }, { entityType: "Order", entityId: { startsWith: T } }] } });
+  await db.hoaDonYeuCauNguoiMua.deleteMany({ where: { orderId: { startsWith: T } } });
+  await db.hoaDonDienTu.deleteMany({ where: { id: { startsWith: T } } });
+  await db.order.deleteMany({ where: { id: { startsWith: T } } });
+  await db.student.deleteMany({ where: { id: { in: [HS, ...Object.values(HV_ID)] } } });
+  await db.lead.deleteMany({ where: { id: LEAD_HS } });
+  await db.center.deleteMany({ where: { id: { in: [CS1, CS_KHAC] } } });
+}
+
+async function dungFixture(o: { donData?: Record<string, unknown>; hocVien?: boolean } = {}) {
+  await don();
+  await db.center.create({ data: { id: CS1, name: "CS1 YCW", slug: CS1, address: "x" } });
+  if (o.hocVien) {
+    await db.student.create({
+      data: {
+        id: HS,
+        name: "Lê Minh Hồ Sơ",
+        dateOfBirth: new Date("2016-05-20T00:00:00.000Z"),
+        nationalId: CCCD_HS_HOSO,
+        parentName: "Lê Thị Hồ Sơ",
+        parentPhone: "0905777666",
+        parentEmail: "hoso.ycw@example.com",
+        parentNationalId: CCCD_PH_HOSO,
+        city: "Đà Nẵng",
+        ward: "Hải Châu 1",
+        address: "10 Hồ Sơ",
+      },
+    });
+  }
+  await db.order.create({
+    data: {
+      id: DON1,
+      code: "ORD-269976-000001",
+      type: "COURSE",
+      status: "CONFIRMED",
+      customerName: "Khách hàng YCW",
+      customerPhone: "0328545331",
+      totalAmount: 5_000_000,
+      centerId: CS1,
+      ...(o.hocVien ? { studentId: HS } : {}),
+      ...(o.donData ?? {}),
+    },
+  });
+}
+
+async function tao(): Promise<Extract<KetQuaTao, { ok: true }>> {
+  const r = await taoYeuCau({ actor: KT1, nguoi: ng, orderId: DON1, phamVi: "DON", ttlPhut: 240, now: NOW });
+  if (!r.ok) throw new Error(`fixture: ${r.ma}`);
+  return r;
+}
+const mo = async (t: Extract<KetQuaTao, { ok: true }>) => {
+  const r = await moBangToken({ id: t.id, token: t.token, gioiHan: G, now: NOW });
+  if (!r.ok) throw new Error(`mở: ${r.ma}`);
+  return r.yeuCau.dienSan as Record<string, string>;
+};
+const gui = (t: Extract<KetQuaTao, { ok: true }>, du: Record<string, string>, banDau: Record<string, string>, now: Date = NOW) =>
+  guiThongTinPhuHuynh({ id: t.id, token: t.token, gioiHan: G, du, banDau, hocVienThem: [], hocVienThemBanDau: [], donY: { phienBanDieuKhoan: "dk-test" }, now });
+const donNay = () => db.order.findUniqueOrThrow({ where: { id: DON1 } });
+type Em = { ten: string; ngaySinh: string | null; cccd: string | null };
+const guiHv = (t: Extract<KetQuaTao, { ok: true }>, du: Record<string, string>, banDau: Record<string, string>, hv: { gui: Em[]; banDau: Em[] }, now: Date = NOW) =>
+  guiThongTinPhuHuynh({ id: t.id, token: t.token, gioiHan: G, du, banDau, hocVienThem: hv.gui, hocVienThemBanDau: hv.banDau, donY: { phienBanDieuKhoan: "dk-test" }, now });
+const CA_NHAN = { loai: "CA_NHAN", ten: "Nguyễn Thị Nhiều Con", cccd: CCCD_PH, diaChi: "114 Hoàng Diệu, Đà Nẵng" };
+const CCCD_BE_HAI = "048222222222";
+const CCCD_BE_BA = "048333333333";
+
+beforeEach(async () => {
+  if (RUN_DB_TESTS) await dungFixture();
+});
+afterAll(async () => {
+  if (RUN_DB_TESTS) await don();
+});
+
+const chay = RUN_DB_TESTS ? describe : describe.skip;
+
+chay("[YCW-01] điền sẵn khi phụ huynh mở liên kết", () => {
+  it("lấy từ ĐƠN rồi hồ sơ học viên (đơn trước, hồ sơ sau); loại CÁ NHÂN; KHÔNG có hai ô CCCD dù hồ sơ có đủ — đối chứng dương: các ô còn lại CÓ", async () => {
+    await dungFixture({ hocVien: true, donData: { invoiceBuyerName: "Tên người mua trên đơn" } });
+    const o = await mo(await tao());
+    expect(o).toMatchObject({
+      loai: "CA_NHAN",
+      ten: "Tên người mua trên đơn", // ĐƠN thắng hồ sơ
+      sdt: "0328545331", // SĐT trên đơn thắng SĐT hồ sơ
+      email: "hoso.ycw@example.com", // đơn không có ⇒ hồ sơ
+      diaChi: "10 Hồ Sơ, Hải Châu 1, Đà Nẵng",
+      tenHocVien: "Lê Minh Hồ Sơ",
+      ngaySinhHocVien: "2016-05-20",
+    });
+    expect("cccd" in o).toBe(false);
+    expect("cccdHocVien" in o).toBe(false);
+    expect(JSON.stringify(o)).not.toMatch(new RegExp(`${CCCD_HS_HOSO}|${CCCD_PH_HOSO}`));
+  });
+  it("token SAI ⇒ không có điền sẵn nào (không đọc đơn/hồ sơ khi chưa qua cổng); đối chứng: token đúng ⇒ có", async () => {
+    await dungFixture({ hocVien: true });
+    const t = await tao();
+    const sai = await moBangToken({ id: t.id, token: `${t.token.slice(0, -2)}xx`, gioiHan: G, now: NOW });
+    expect(sai.ok).toBe(false);
+    expect(JSON.stringify(sai)).not.toContain("Lê Minh Hồ Sơ");
+    expect(Object.keys(await mo(t)).length).toBeGreaterThan(0);
+  });
+  it("đơn đang có CẢ tên đơn vị lẫn MST ⇒ điền sẵn DOANH NGHIỆP (để gửi nguyên không đè thông tin công ty); thiếu MST ⇒ vẫn cá nhân", async () => {
+    await dungFixture({ donData: { invoiceCompanyName: "Công ty YCW", invoiceTaxCode: "0401234567", invoiceEmail: "kt.ycw@example.com", customerAddress: "211 Nguyễn Hữu Thọ" } });
+    expect(await mo(await tao())).toMatchObject({ loai: "DOANH_NGHIEP", ten: "Công ty YCW", maSoThue: "0401234567", email: "kt.ycw@example.com" });
+    await dungFixture({ donData: { invoiceCompanyName: "Công ty chưa có MST" } });
+    expect((await mo(await tao())).loai).toBe("CA_NHAN");
+  });
+});
+
+chay("[YCW-02] gửi ⇒ ghi thẳng vào ĐƠN, chỉ ô PH đổi", () => {
+  it("lần đầu (banDau rỗng): mọi ô PH gửi vào ĐÚNG cột; địa chỉ thành MỘT ô (xoá phường/tỉnh); SĐT KHÁCH (`customerPhone`) KHÔNG đổi; yêu cầu vẫn DANG_MO để gửi lại", async () => {
+    await dungFixture({ donData: { customerWard: "Phường cũ", customerCity: "Thành phố cũ" } });
+    const t = await tao();
+    const r = await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Thị Phụ Huynh", cccd: CCCD_PH, diaChi: "114 Hoàng Diệu, Đà Nẵng", email: "ph.ycw@example.com", sdt: "0905 123 456", tenHocVien: "Bé YCW", ngaySinhHocVien: "2016-08-03", cccdHocVien: "048987654321" }, {});
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "DA_GHI" });
+    const sau = await donNay();
+    expect(sau).toMatchObject({
+      invoiceBuyerName: "Nguyễn Thị Phụ Huynh",
+      customerCccd: CCCD_PH,
+      customerAddress: "114 Hoàng Diệu, Đà Nẵng",
+      customerWard: null,
+      customerCity: null,
+      invoiceEmail: "ph.ycw@example.com",
+      invoiceParentPhone: "0905123456",
+      invoiceStudentName: "Bé YCW",
+      invoiceStudentCccd: "048987654321",
+      customerPhone: "0328545331", // ⛔ chìa đối khớp tiền
+    });
+    expect(sau.invoiceStudentDob?.toISOString().slice(0, 10)).toBe("2016-08-03");
+    expect((await db.hoaDonYeuCauNguoiMua.findUniqueOrThrow({ where: { id: t.id } })).trangThai).toBe("DANG_MO");
+  });
+
+  it("[YCW-02b] PH gửi NGUYÊN bản điền sẵn mà Sale đã sửa ô đó trong lúc PH đang mở form ⇒ chỉnh sửa của Sale GIỮ NGUYÊN; chỉ ô PH thật sự đổi (CCCD, bắt buộc) vào đơn", async () => {
+    await dungFixture({ donData: { invoiceBuyerName: "Tên lúc PH mở form", invoiceEmail: "cu@example.com", customerAddress: "Địa chỉ lúc mở" } });
+    const t = await tao();
+    const banDau = await mo(t); // PH nhìn thấy bản điền sẵn này
+    await db.order.update({ where: { id: DON1 }, data: { invoiceBuyerName: "Tên Sale vừa sửa" } }); // Sale sửa giữa chừng
+    const r = await gui(t, { ...banDau, cccd: CCCD_PH }, banDau, new Date(NOW.getTime() + 60_000));
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "DA_GHI" });
+    expect(await donNay()).toMatchObject({ invoiceBuyerName: "Tên Sale vừa sửa", invoiceEmail: "cu@example.com", customerAddress: "Địa chỉ lúc mở", customerCccd: CCCD_PH });
+    // Đối chứng dương: PH THẬT SỰ sửa tên ⇒ tên PH vào đơn (ghi sau thắng), email chưa đụng vẫn giữ.
+    const r2 = await gui(t, { ...banDau, cccd: CCCD_PH, ten: "Tên PH sửa lại" }, banDau, new Date(NOW.getTime() + 120_000));
+    expect(r2).toMatchObject({ ok: true, ghiVaoDon: "DA_GHI" });
+    expect(await donNay()).toMatchObject({ invoiceBuyerName: "Tên PH sửa lại", invoiceEmail: "cu@example.com" });
+  });
+
+  it("[YCW-02c] PH không đổi ô nào so với bản điền sẵn (và CCCD đã có ở yêu cầu khác) ⇒ ghiVaoDon = KHONG_DOI: KHÔNG chạm đơn, KHÔNG dòng audit nào trên đơn; `updatedAt` của đơn không đổi", async () => {
+    await dungFixture({ donData: { invoiceBuyerName: "Tên đơn", invoiceEmail: "e@example.com", customerAddress: "Địa chỉ đơn dài" } });
+    const t = await tao();
+    const banDau = await mo(t);
+    const truoc = await donNay();
+    const r = await gui(t, banDau, banDau);
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "KHONG_DOI" });
+    expect(await donNay()).toEqual(truoc);
+    expect(await db.auditLog.count({ where: { entityType: "Order", entityId: DON1, action: "PHU_HUYNH_GHI_THONG_TIN_NGUOI_MUA" } })).toBe(0);
+  });
+
+  it("[YCW-02d] địa chỉ CÓ CẤU TRÚC (phường + tỉnh) KHÔNG bị dồn thành một chuỗi khi PH không sửa ô địa chỉ; PH sửa ô địa chỉ ⇒ thành MỘT ô, xoá phường/tỉnh", async () => {
+    await dungFixture({ donData: { customerAddress: "60 Đồng Du", customerWard: "Hải Châu 1", customerCity: "Đà Nẵng" } });
+    const t = await tao();
+    const banDau = await mo(t);
+    expect(banDau.diaChi).toBe("60 Đồng Du, Hải Châu 1, Đà Nẵng");
+    await gui(t, { ...banDau, cccd: CCCD_PH }, banDau);
+    expect(await donNay()).toMatchObject({ customerAddress: "60 Đồng Du", customerWard: "Hải Châu 1", customerCity: "Đà Nẵng" });
+    await gui(t, { ...banDau, cccd: CCCD_PH, diaChi: "9 Lê Duẩn, Đà Nẵng" }, banDau, new Date(NOW.getTime() + 60_000));
+    expect(await donNay()).toMatchObject({ customerAddress: "9 Lê Duẩn, Đà Nẵng", customerWard: null, customerCity: null });
+  });
+});
+
+chay("[YCW-03] AI GHI SAU THÌ THẮNG — PH ↔ Sale, cả hai chiều", () => {
+  it("PH gửi sai ⇒ Sale sửa đơn ⇒ Sale thắng; PH gửi lại ô khác ⇒ ô Sale sửa GIỮ (PH không đụng); PH sửa đúng ô đó ⇒ PH thắng lại", async () => {
+    await dungFixture({ donData: { invoiceBuyerName: "Tên gốc", invoiceEmail: "goc@example.com" } });
+    const t = await tao();
+    const banDau = await mo(t);
+    await gui(t, { ...banDau, ten: "Tên PH gõ sai", cccd: CCCD_PH }, banDau, new Date(NOW.getTime() + 60_000));
+    expect((await donNay()).invoiceBuyerName).toBe("Tên PH gõ sai");
+    await db.order.update({ where: { id: DON1 }, data: { invoiceBuyerName: "Tên Sale sửa đúng" } }); // Sale sửa SAU PH
+    expect((await donNay()).invoiceBuyerName).toBe("Tên Sale sửa đúng");
+    const banDau2 = await mo(t); // PH mở lại: thấy tên đã được Sale sửa
+    expect(banDau2.ten).toBe("Tên Sale sửa đúng");
+    await gui(t, { ...banDau2, email: "moi@example.com", cccd: CCCD_PH }, banDau2, new Date(NOW.getTime() + 120_000));
+    expect(await donNay()).toMatchObject({ invoiceBuyerName: "Tên Sale sửa đúng", invoiceEmail: "moi@example.com" });
+    await gui(t, { ...banDau2, ten: "Tên PH sửa lần cuối", cccd: CCCD_PH }, banDau2, new Date(NOW.getTime() + 180_000));
+    expect((await donNay()).invoiceBuyerName).toBe("Tên PH sửa lần cuối");
+  });
+
+  it("đổi loại: đơn đang là DOANH NGHIỆP, PH đổi sang CÁ NHÂN ⇒ XOÁ tên đơn vị + MST và ghi tên ba/mẹ; PH gửi nguyên (vẫn DOANH NGHIỆP) ⇒ công ty GIỮ NGUYÊN", async () => {
+    await dungFixture({ donData: { invoiceCompanyName: "Công ty YCW", invoiceTaxCode: "0401234567", invoiceEmail: "kt.ycw@example.com", customerAddress: "211 Nguyễn Hữu Thọ" } });
+    const t = await tao();
+    const banDau = await mo(t);
+    expect(banDau.loai).toBe("DOANH_NGHIEP");
+    expect(await gui(t, banDau, banDau)).toMatchObject({ ok: true, ghiVaoDon: "KHONG_DOI" });
+    expect(await donNay()).toMatchObject({ invoiceCompanyName: "Công ty YCW", invoiceTaxCode: "0401234567" });
+    await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Văn Cá Nhân", cccd: CCCD_PH, diaChi: banDau.diaChi!, email: banDau.email! }, banDau, new Date(NOW.getTime() + 60_000));
+    expect(await donNay()).toMatchObject({ invoiceCompanyName: null, invoiceTaxCode: null, invoiceBuyerName: "Nguyễn Văn Cá Nhân", customerCccd: CCCD_PH });
+  });
+});
+
+chay("[YCW-04] an toàn của đường ghi", () => {
+  it("đơn đang có hoá đơn DANG_PHAT_HANH ⇒ KHÔNG ghi vào đơn (ghiVaoDon = HOA_DON_DANG_PHAT_HANH); dữ liệu PH vẫn nằm trên yêu cầu; đối chứng: hoá đơn NHAP thì vẫn ghi", async () => {
+    const t = await tao();
+    await db.hoaDonDienTu.create({ data: { id: `${T}hd1`, orderId: DON1, centerId: CS1, trangThai: "DANG_PHAT_HANH", tongTien: 5_000_000, taoBoiId: KT1.userId } });
+    const truoc = await donNay();
+    const r = await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Thị Chặn", cccd: CCCD_PH, diaChi: "114 Hoàng Diệu, Đà Nẵng" }, {});
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "HOA_DON_DANG_PHAT_HANH" });
+    expect(await donNay()).toEqual(truoc);
+    expect(JSON.stringify((await db.hoaDonYeuCauNguoiMua.findUniqueOrThrow({ where: { id: t.id } })).duLieuGui)).toContain("Nguyễn Thị Chặn");
+    await db.hoaDonDienTu.update({ where: { id: `${T}hd1` }, data: { trangThai: "NHAP" } });
+    expect(await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Thị Được", cccd: CCCD_PH, diaChi: "114 Hoàng Diệu, Đà Nẵng" }, {}, new Date(NOW.getTime() + 60_000))).toMatchObject({ ghiVaoDon: "DA_GHI" });
+    expect((await donNay()).invoiceBuyerName).toBe("Nguyễn Thị Được");
+  });
+
+  it("nhật ký của ĐƠN chỉ nêu TÊN cột — không một giá trị tên / CCCD / SĐT / địa chỉ nào; đối chứng dương: tên cột có", async () => {
+    const t = await tao();
+    await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Thị Nhật Ký YCWX", cccd: CCCD_PH, sdt: "0905123456", diaChi: "114 Hoàng Diệu YCWX, Đà Nẵng" }, {});
+    const au = JSON.stringify(await db.auditLog.findMany({ where: { entityType: "Order", entityId: DON1, action: "PHU_HUYNH_GHI_THONG_TIN_NGUOI_MUA" } }));
+    for (const v of ["Nhật Ký YCWX", CCCD_PH, "0905123456", "YCWX"]) expect(au, v).not.toContain(v);
+    expect(au).toContain("customerCccd");
+    expect(au).toContain("invoiceBuyerName");
+  });
+
+  it("gửi bị từ chối (liên kết sai / hết hạn) ⇒ đơn KHÔNG đổi; gửi lỗi định dạng ⇒ đơn không đổi", async () => {
+    const t = await tao();
+    const truoc = await donNay();
+    expect((await gui({ ...t, token: "sai-token-khong-dung" }, { loai: "CA_NHAN", ten: "Kẻ gian", cccd: CCCD_PH, diaChi: "114 Hoàng Diệu, Đà Nẵng" }, {})).ok).toBe(false);
+    expect(await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Thị Quá Hạn", cccd: CCCD_PH, diaChi: "114 Hoàng Diệu, Đà Nẵng" }, {}, new Date(NOW.getTime() + 241 * 60_000))).toMatchObject({ ok: false });
+    expect(await gui(t, { loai: "CA_NHAN", ten: "Nguyễn Thị Lỗi", cccd: "12", diaChi: "114 Hoàng Diệu, Đà Nẵng" }, {})).toMatchObject({ ok: false, ma: "DU_LIEU_SAI" });
+    expect(await donNay()).toEqual(truoc);
+  });
+});
+
+chay("[YCW-HVT] NHIỀU CON: các em còn lại lưu ở `Order.invoiceHocVienThem` (09/11/2026)", () => {
+  const luu = async () => (await donNay()).invoiceHocVienThem;
+
+  it("phụ huynh thêm 2 em ⇒ ghi vào đơn (đủ tên · ngày sinh · CCCD) CÙNG giao dịch với các ô khác; nhật ký chỉ nêu TÊN cột", async () => {
+    const t = await tao();
+    const r = await guiHv(t, CA_NHAN, {}, { gui: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI }, { ten: "Bé Ba", ngaySinh: null, cccd: CCCD_BE_BA }], banDau: [] });
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "DA_GHI" });
+    expect(await luu()).toEqual([
+      { ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI },
+      { ten: "Bé Ba", ngaySinh: null, cccd: CCCD_BE_BA },
+    ]);
+    expect((await donNay()).invoiceBuyerName).toBe("Nguyễn Thị Nhiều Con");
+    const au = JSON.stringify(await db.auditLog.findMany({ where: { entityType: "Order", entityId: DON1, action: "PHU_HUYNH_GHI_THONG_TIN_NGUOI_MUA" } }));
+    expect(au).toContain("invoiceHocVienThem");
+    for (const v of [CCCD_BE_HAI, CCCD_BE_BA, "Bé Hai", "Bé Ba"]) expect(au, v).not.toContain(v); // nhật ký KHÔNG mang giá trị
+  });
+
+  it("điền sẵn khi mở lại liên kết: tên + ngày sinh các em đã lưu, KHÔNG CCCD — đối chứng dương: tên có", async () => {
+    await dungFixture({ donData: { invoiceHocVienThem: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI }] } });
+    const t = await tao();
+    const r = await moBangToken({ id: t.id, token: t.token, gioiHan: G, now: NOW });
+    if (!r.ok) throw new Error("mở");
+    const ds = r.yeuCau.dienSanHocVienThem;
+    expect(ds.map((d) => d.ten)).toEqual(["Bé Hai"]); // tầng dịch vụ trả đủ; lớp công khai tự bỏ CCCD (xem [CKH-HVT])
+  });
+
+  it("gửi lại KHÔNG gõ lại CCCD (không bao giờ điền sẵn) và đổi TÊN em khác ⇒ em cũ giữ CCCD + ngày sinh đang lưu (ghép theo TÊN); không bị xoá", async () => {
+    await dungFixture({ donData: { invoiceHocVienThem: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI }] } });
+    const t = await tao();
+    const banDau = [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: null }];
+    // PH chỉ thêm Bé Ba, không đụng Bé Hai (gửi lại nguyên bản điền sẵn + em mới)
+    await guiHv(t, CA_NHAN, {}, { gui: [...banDau, { ten: "Bé Ba", ngaySinh: null, cccd: null }], banDau });
+    expect(await luu()).toEqual([
+      { ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI }, // CCCD giữ nguyên
+      { ten: "Bé Ba", ngaySinh: null, cccd: null },
+    ]);
+  });
+
+  it("GỠ một em ở giữa ⇒ em đó biến mất CÙNG CCCD của em, và CCCD KHÔNG trượt sang em kế (ghép theo chỉ số sẽ sai)", async () => {
+    await dungFixture({
+      donData: { invoiceHocVienThem: [{ ten: "Bé Hai", ngaySinh: null, cccd: CCCD_BE_HAI }, { ten: "Bé Ba", ngaySinh: null, cccd: CCCD_BE_BA }] },
+    });
+    const t = await tao();
+    const banDau = [{ ten: "Bé Hai", ngaySinh: null, cccd: null }, { ten: "Bé Ba", ngaySinh: null, cccd: null }];
+    await guiHv(t, CA_NHAN, {}, { gui: [{ ten: "Bé Ba", ngaySinh: null, cccd: null }], banDau });
+    const sau = await luu();
+    expect(sau).toEqual([{ ten: "Bé Ba", ngaySinh: null, cccd: CCCD_BE_BA }]);
+    expect(JSON.stringify(sau)).not.toContain(CCCD_BE_HAI);
+  });
+
+  it("gỡ HẾT các em ⇒ cột về NULL (chưa khai thêm em nào), không để mảng rỗng", async () => {
+    await dungFixture({ donData: { invoiceHocVienThem: [{ ten: "Bé Hai", ngaySinh: null, cccd: null }] } });
+    const t = await tao();
+    await guiHv(t, CA_NHAN, {}, { gui: [], banDau: [{ ten: "Bé Hai", ngaySinh: null, cccd: null }] });
+    expect(await luu()).toBeNull();
+  });
+
+  it("phụ huynh KHÔNG đổi gì so với bản điền sẵn ⇒ cột KHÔNG bị đụng — không đè lên chỉnh sửa của Sale làm giữa lúc PH đang mở form", async () => {
+    await dungFixture({ donData: { invoiceHocVienThem: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI }] } });
+    const t = await tao();
+    // Sale sửa tên em giữa chừng (sau khi PH đã mở form với bản điền sẵn cũ)
+    await db.order.update({ where: { id: DON1 }, data: { invoiceHocVienThem: [{ ten: "Bé Hai (Sale sửa)", ngaySinh: "2018-01-02", cccd: CCCD_BE_HAI }] } });
+    const banDau = [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: null }];
+    await guiHv(t, CA_NHAN, {}, { gui: banDau, banDau }); // PH bấm Gửi mà không sửa em nào
+    expect(JSON.stringify(await luu())).toContain("Bé Hai (Sale sửa)");
+  });
+
+  it("người mua DOANH NGHIỆP ⇒ KHÔNG đụng danh sách em (người liên hệ vẫn là phụ huynh cũ); đối chứng: cá nhân thì ghi", async () => {
+    await dungFixture({ donData: { invoiceHocVienThem: [{ ten: "Bé Hai", ngaySinh: null, cccd: CCCD_BE_HAI }] } });
+    const t = await tao();
+    await guiHv(t, { loai: "DOANH_NGHIEP", ten: "Công ty TNHH YCW", maSoThue: "0401234567", email: "kt@ycw.example.com", diaChi: "211 Nguyễn Hữu Thọ, Đà Nẵng" }, {}, { gui: [], banDau: [{ ten: "Bé Hai", ngaySinh: null, cccd: null }] });
+    expect(JSON.stringify(await luu())).toContain(CCCD_BE_HAI);
+    await guiHv(t, CA_NHAN, {}, { gui: [], banDau: [{ ten: "Bé Hai", ngaySinh: null, cccd: null }] }, new Date(NOW.getTime() + 60_000));
+    expect(await luu()).toBeNull();
+  });
+
+  it("đơn đang DANG_PHAT_HANH ⇒ KHÔNG ghi danh sách em (cùng cổng các ô khác)", async () => {
+    const t = await tao();
+    await db.hoaDonDienTu.create({ data: { id: `${T}hd-hvt`, orderId: DON1, centerId: CS1, trangThai: "DANG_PHAT_HANH", tongTien: 5_000_000, taoBoiId: KT1.userId } });
+    const r = await guiHv(t, CA_NHAN, {}, { gui: [{ ten: "Bé Hai", ngaySinh: null, cccd: null }], banDau: [] });
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "HOA_DON_DANG_PHAT_HANH" });
+    expect(await luu()).toBeNull();
+  });
+
+  it("danh sách bị hỏng sẵn trong DB (sửa tay) ⇒ đọc phòng thủ, không làm sập đường gửi/mở", async () => {
+    await dungFixture({ donData: { invoiceHocVienThem: { khong: "phai mang" } } });
+    const t = await tao();
+    const r = await guiHv(t, CA_NHAN, {}, { gui: [{ ten: "Bé Hai", ngaySinh: null, cccd: null }], banDau: [] });
+    expect(r).toMatchObject({ ok: true });
+    expect(await luu()).toEqual([{ ten: "Bé Hai", ngaySinh: null, cccd: null }]);
+  });
+});
+
+chay("[YCW-HS] [09/11/2026] ĐỒNG BỘ các em của form QR sang HỒ SƠ HỌC VIÊN: chỉ điền ô TRỐNG, ghép theo tên trong gia đình của đơn", () => {
+  const CCCD_2 = "048222222222";
+  const CCCD_3 = "048333333333";
+  /** Gia đình: đơn của HS (em thứ nhất, hồ sơ ĐÃ đủ ngày sinh + CCCD) + anh/chị/em cùng phiếu lead. */
+  async function dungGiaDinh(them: (leadId: string) => Promise<void> = async () => undefined) {
+    await dungFixture({ hocVien: true });
+    await db.center.create({ data: { id: CS_KHAC, name: "CS khác YCW", slug: CS_KHAC, address: "y" } });
+    await db.lead.create({ data: { id: LEAD_HS, parentName: "PH YCW", phone: "0905000999", centerId: CS1 } });
+    await db.student.update({ where: { id: HS }, data: { leadId: LEAD_HS, centerId: CS1 } });
+    await db.student.create({ data: { id: HV_ID.hai, name: "Bé Hai", leadId: LEAD_HS, centerId: CS1 } });
+    await db.student.create({ data: { id: HV_ID.ba, name: "Bé Ba", leadId: LEAD_HS, centerId: CS1, dateOfBirth: new Date("2019-03-04T00:00:00+07:00") } });
+    await them(LEAD_HS);
+  }
+  const hs = (id: string) => db.student.findUniqueOrThrow({ where: { id }, select: { dateOfBirth: true, nationalId: true } });
+  const gui2 = async (du: Record<string, string>, em: { ten: string; ngaySinh: string | null; cccd: string | null }[]) => {
+    const t = await tao();
+    return guiHv(t, { ...CA_NHAN, ...du }, {}, { gui: em, banDau: [] });
+  };
+
+  it("em thứ 2, 3 ⇒ ghi vào HỒ SƠ đúng em: ô TRỐNG được điền, ô ĐÃ CÓ KHÔNG bị đè (em 3 đã có ngày sinh nên chỉ nhận CCCD); nhật ký hồ sơ có dòng nói rõ — và KHÔNG mang giá trị CCCD", async () => {
+    await dungGiaDinh();
+    const r = await gui2({}, [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_2 }, { ten: "Bé Ba", ngaySinh: "2017-07-07", cccd: CCCD_3 }]);
+    expect(r).toMatchObject({ ok: true, ghiVaoDon: "DA_GHI" });
+    const hai = await hs(HV_ID.hai);
+    expect(hai.nationalId).toBe(CCCD_2);
+    expect(hai.dateOfBirth?.toISOString().slice(0, 10)).toMatch(/2018-01-0[12]/); // 00:00 giờ VN = 17:00Z hôm trước
+    const ba = await hs(HV_ID.ba);
+    expect(ba.nationalId).toBe(CCCD_3);
+    expect(ba.dateOfBirth?.toISOString()).toBe(new Date("2019-03-04T00:00:00+07:00").toISOString()); // ngày sinh PH gõ (2017-07-07) KHÔNG đè ngày sinh hồ sơ đã có
+    const au = JSON.stringify(await db.auditLog.findMany({ where: { OR: [{ entityId: HV_ID.hai }, { entityId: HV_ID.ba }] } }));
+    expect(au).toContain("nationalId");
+    expect(au).not.toContain(CCCD_2);
+    expect(au).not.toContain(CCCD_3);
+    // nhật ký của ĐƠN chỉ có SỐ LƯỢNG
+    const ad = await db.auditLog.findFirstOrThrow({ where: { entityType: "Order", entityId: DON1, action: "PHU_HUYNH_GHI_THONG_TIN_NGUOI_MUA" } });
+    expect(ad.newValues).toMatchObject({ hoSoDaDongBo: 2, hoSoChuaKhop: 0 });
+  });
+
+  it("em thứ NHẤT (ba ô cũ) cũng đồng bộ — nhưng hồ sơ em đã đủ ngày sinh + CCCD nên KHÔNG bị đè bởi giá trị phụ huynh gõ", async () => {
+    await dungGiaDinh();
+    const truoc = await hs(HS);
+    await gui2({ tenHocVien: "Lê Minh Hồ Sơ", ngaySinhHocVien: "2001-01-01", cccdHocVien: "048999999999" }, []);
+    expect(await hs(HS)).toEqual(truoc);
+    // đối chứng: đơn VẪN nhận giá trị phụ huynh gõ (đơn là «đã khai», hồ sơ là «đã lưu» — hai thứ khác nhau)
+    expect((await donNay()).invoiceStudentCccd).toBe("048999999999");
+  });
+
+  it("tên KHÔNG KHỚP em nào trong gia đình ⇒ không tạo hồ sơ, không ghi hồ sơ ai; nhật ký đơn đếm `hoSoChuaKhop`", async () => {
+    await dungGiaDinh();
+    await gui2({}, [{ ten: "Bé Tư", ngaySinh: "2020-02-02", cccd: CCCD_2 }]);
+    expect(await db.student.count({ where: { id: { startsWith: T } } })).toBe(3); // HS + hai + ba: không thêm hồ sơ mới
+    expect((await hs(HV_ID.hai)).nationalId).toBeNull();
+    const ad = await db.auditLog.findFirstOrThrow({ where: { entityType: "Order", entityId: DON1, action: "PHU_HUYNH_GHI_THONG_TIN_NGUOI_MUA" } });
+    expect(ad.newValues).toMatchObject({ hoSoDaDongBo: 0, hoSoChuaKhop: 1 });
+  });
+
+  it("gõ KHÔNG DẤU vẫn ghép được khi chỉ có MỘT hồ sơ khớp («Be Hai» ⇒ «Bé Hai»); đối chứng: hai hồ sơ cùng tên ⇒ BỎ QUA, không đoán", async () => {
+    await dungGiaDinh();
+    const t = await tao();
+    await guiHv(t, CA_NHAN, {}, { gui: [{ ten: "be hai", ngaySinh: null, cccd: CCCD_2 }], banDau: [] });
+    expect((await hs(HV_ID.hai)).nationalId).toBe(CCCD_2);
+    // hai hồ sơ cùng tên «Bé Trùng» ⇒ mơ hồ
+    await db.student.create({ data: { id: HV_ID.trung1, name: "Bé Trùng", leadId: LEAD_HS, centerId: CS1 } });
+    await db.student.create({ data: { id: HV_ID.trung2, name: "Bé Trùng", leadId: LEAD_HS, centerId: CS1 } });
+    await guiHv(t, CA_NHAN, {}, { gui: [{ ten: "Bé Trùng", ngaySinh: null, cccd: CCCD_3 }], banDau: [] }, new Date(NOW.getTime() + 60_000));
+    expect((await hs(HV_ID.trung1)).nationalId).toBeNull();
+    expect((await hs(HV_ID.trung2)).nationalId).toBeNull();
+    const ad = await db.auditLog.findFirstOrThrow({ where: { entityType: "Order", entityId: DON1, action: "PHU_HUYNH_GHI_THONG_TIN_NGUOI_MUA" }, orderBy: { createdAt: "desc" } });
+    expect(ad.newValues).toMatchObject({ hoSoMoHo: 1 });
+  });
+
+  it("học viên CÙNG TÊN nhưng KHÁC GIA ĐÌNH (khác phiếu lead) hoặc ở cơ sở KHÁC ⇒ KHÔNG bị đụng", async () => {
+    await dungGiaDinh(async () => {
+      await db.student.create({ data: { id: HV_ID.laNguoi, name: "Bé Lạ", centerId: CS1 } }); // không cùng lead
+      await db.student.create({ data: { id: HV_ID.coSoKhac, name: "Bé Khác Cơ Sở", leadId: LEAD_HS, centerId: CS_KHAC } }); // cùng lead nhưng cơ sở khác
+    });
+    await gui2({}, [{ ten: "Bé Lạ", ngaySinh: "2018-01-02", cccd: CCCD_2 }, { ten: "Bé Khác Cơ Sở", ngaySinh: "2018-01-02", cccd: CCCD_3 }]);
+    expect(await hs(HV_ID.laNguoi)).toEqual({ dateOfBirth: null, nationalId: null });
+    expect(await hs(HV_ID.coSoKhac)).toEqual({ dateOfBirth: null, nationalId: null });
+  });
+
+  it("người mua là DOANH NGHIỆP ⇒ KHÔNG đồng bộ hồ sơ nào; gửi lại lần hai cùng dữ liệu ⇒ idempotent (không đổi gì thêm)", async () => {
+    await dungGiaDinh();
+    const t = await tao();
+    await guiHv(t, { loai: "DOANH_NGHIEP", ten: "Công ty TNHH YCW", maSoThue: "0401234567", email: "kt@ycw.example.com", diaChi: "211 Nguyễn Hữu Thọ, Đà Nẵng" }, {}, { gui: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_2 }], banDau: [] });
+    expect(await hs(HV_ID.hai)).toEqual({ dateOfBirth: null, nationalId: null });
+    // cá nhân gửi hai lần giống hệt nhau
+    const t2 = t; // cùng yêu cầu (vẫn DANG_MO): gửi lại được tới hết hạn liên kết
+    await guiHv(t2, CA_NHAN, {}, { gui: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_2 }], banDau: [] }, new Date(NOW.getTime() + 60_000));
+    const sau1 = await hs(HV_ID.hai);
+    await guiHv(t2, CA_NHAN, {}, { gui: [{ ten: "Bé Hai", ngaySinh: "2018-01-02", cccd: CCCD_2 }], banDau: [] }, new Date(NOW.getTime() + 120_000));
+    expect(await hs(HV_ID.hai)).toEqual(sau1);
+    expect(sau1.nationalId).toBe(CCCD_2);
+  });
+});

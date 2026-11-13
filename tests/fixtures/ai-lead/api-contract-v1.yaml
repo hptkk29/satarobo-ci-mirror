@@ -1,0 +1,796 @@
+openapi: 3.1.0
+info:
+  title: SataRobo AI Lead Gateway — hợp đồng Agent ↔ Admin
+  version: 1.0.0-draft
+  summary: Hợp đồng API v1 giữa AI Agent Messenger (consumer) và SataRobo Admin (provider).
+  description: |
+    **TRẠNG THÁI: BẢN NHÁP HỢP ĐỒNG (`1.0.0-draft`). PHÍA PROVIDER CHƯA ĐƯỢC HIỆN THỰC.**
+    Cả năm endpoint dưới đây đều mang `x-implementation-status: NOT_IMPLEMENTED_ON_TEST` — gọi vào
+    TEST/PROD hiện nay sẽ ra 404. Đội Admin sẽ đổi trạng thái từng endpoint trong tệp này khi nó thật
+    sự chạy trên TEST, kèm tăng `info.version`.
+
+    Đây là TÀI LIỆU NGUỒN SỰ THẬT của hợp đồng. Các tệp `*-guide.md` giải thích cách dùng; khi chúng
+    mâu thuẫn với tệp này thì **tệp này thắng** và là lỗi của tệp guide.
+
+    ## Nguyên tắc bất biến (vi phạm = lỗi hợp đồng, không phải "tuỳ chọn")
+    1. **Agent chỉ GHI, không ĐỌC dữ liệu nội bộ.** Không có endpoint nào trả về lead, liên hệ, học viên,
+       đơn hàng, sale, nguồn, kết quả kiểm tra trùng. Thứ duy nhất Agent đọc được là `GET /catalog`
+       (danh mục cơ sở đã xuất bản công khai).
+    2. **Trung tính (N1).** TOÀN BỘ thân và header của phản hồi `POST /lead-intakes` (trừ `receiptId`,
+       `requestId`, `serverTime`) CHỈ phụ thuộc vào (a) dữ liệu Agent vừa gửi và (b) trạng thái cuộc hội
+       thoại — KHÔNG BAO GIỜ phụ thuộc vào việc số điện thoại đã có trong CRM hay chưa. Khách mới, khách cũ,
+       nghi trùng, chờ chia sale: phản hồi giống nhau từng byte.
+    3. **Server tự quyết nguồn, sale, cơ sở thật, trạng thái lead.** Agent không có trường nào để gửi
+       những thứ đó, và khoá lạ trong body bị từ chối (`PAYLOAD_INVALID`).
+    4. **Không văn bản tự do dài; chuỗi còn lại bị giới hạn ký tự.** Không trường nào nhận lời nhắn hay
+       mô tả tự do. Mọi lý do/loại lỗi là enum. Các chuỗi còn lại do khách/Meta quyết định (`fbName`,
+       `phoneRaw`) hoặc là định danh (`inboxThreadId`, `mid`, mã) đều bị ràng buộc độ dài + tập ký tự
+       trong schema, và phía Admin PHẢI coi chúng là **dữ liệu không tin cậy** (chuẩn hoá, escape khi hiển
+       thị, không bao giờ đưa vào bảng tính/lời nhắc cho mô hình mà không làm sạch).
+    5. `pageId` / `psid` / `fbName` phải do **mã runtime của Agent** điền từ webhook Meta, KHÔNG phải do
+       LLM sinh ra qua tham số công cụ. (Xem `open-decisions.md` OD-01 về mức độ máy chủ xác minh được.)
+
+    ## Yêu cầu BẮT BUỘC đối với provider (Admin) — để các nguyên tắc trên không chỉ là lời dặn cho Agent
+    - **P1 Cùng đường mã.** Kiểm trùng, quy nguồn, chia người phụ trách chạy SAU khi đã quyết định phản hồi
+      và KHÔNG ảnh hưởng đường trả lời; mọi nhánh nghiệp vụ đi qua cùng một đường mã phản hồi, cùng khung
+      thời gian ghi, cùng độ dài trường định danh. Vi phạm unique/đua dữ liệu KHÔNG bao giờ trở thành mã lỗi
+      riêng. `receiptId`/`requestId` ngẫu nhiên, độ dài cố định, không dẫn xuất từ SĐT/hồ sơ. Với agent không
+      tồn tại, vẫn tính HMAC bằng khoá giả để thời gian xử lý không phân biệt được với chữ ký sai; các bước
+      kiểm trước xác thực có hạn mức theo địa chỉ nguồn.
+    - **P2 `ownerMode` chỉ thuộc hội thoại.** Lưu trên bản ghi hội thoại khoá `(agentId, pageId, psid)`;
+      chỉ do `/handoffs` trước đó của đúng hội thoại ấy hoặc một thao tác nhân viên gắn rõ với đúng hội thoại ấy
+      (không phải việc nhận một bản ghi hồ sơ chờ) ghi vào. KHÔNG BAO GIỜ suy từ hồ sơ/lead khớp theo SĐT.
+    - **P3 Phạm vi khoá.** `idempotencyKey`, `nonce`, `receiptId` được khoá theo `(agentId, môi trường)`.
+      Thông tin xác thực của Agent KHÔNG được chấp nhận ở bất kỳ route Admin nào và ngược lại; Admin tự
+      kiểm điều này (không giao cho Agent).
+    - **P4 Danh tính của fixture bị cấm.** `agentId` mang tiền tố `cm9ailagenttest`, secret và `pageId` trong
+      `request-response-fixtures/` bị chặn cứng ở mọi môi trường (kiểm lúc khởi động và lúc cấp khoá).
+    - **P5 Heartbeat không phải oracle.** `pages[]` của phản hồi luôn đúng bằng tập Page được cấp cho
+      agent; `pageId` khai thêm bị bỏ qua im lặng (không echo, không lỗi riêng).
+    - **P6 Đối chiếu chỉ ở TEST.** Admin chỉ cung cấp cho đội Agent kết quả đối chiếu theo từng `receiptId`
+      trên dữ liệu tổng hợp ở TEST; ở PROD chỉ cung cấp số liệu gộp.
+    - **P7 Đối chiếu `contractHash`.** Admin giữ bảng `contractHash → contractStatus`; hash lạ ⇒ `COMPATIBLE`
+      kèm cảnh báo phía Admin. `contractHash` là lời khai của Agent, chỉ dùng để chẩn đoán. Công tắc
+      `INCOMPATIBLE` do Admin đặt TAY theo từng `agentId` (không theo build, không phải biện pháp bảo mật).
+    - **P8 Hạn mức theo NHÓM endpoint** (bucket riêng, đề xuất): `/catalog` 30 yêu cầu/60 giây; `/lead-intakes`
+      120/60 giây và 30/60 giây theo `(agent, psid)`; `/handoffs` + `/incidents` + `/heartbeats` 60/60 giây.
+      Lưu lượng khách công khai không được làm cạn hạn mức của heartbeat/handoff.
+    - **P9 Giờ của sự cố.** Gộp sự cố theo ngày dùng GIỜ NHẬN của server; `occurredAt` lệch quá 24 giờ so với
+      giờ server bị `PAYLOAD_INVALID`.
+
+    ## Ký request
+    HMAC-SHA256, **tên header** `X-AiLead-*`. Chi tiết + test vector: `authentication-guide.md` và
+    `request-response-fixtures/hmac-vectors.json`.
+
+    ## Băm của tệp này
+    `contractHash` trong heartbeat = SHA-256 (hex thường) của các byte tệp này **sau khi chuẩn hoá xuống
+    dòng về LF**: `tr -d '\r' < api-contract-v1.yaml | sha256sum`. Giá trị hiện hành ghi ở `README-FOR-AGENT-TEAM.md`.
+  contact:
+    name: Đội SataRobo Admin
+servers:
+  - url: https://test.satarobo.vn/api/ai-lead-agent/v1
+    description: TEST — CHƯA CÓ gateway (xem x-implementation-status)
+  - url: https://admin.satarobo.vn/api/ai-lead-agent/v1
+    description: PROD — KHÔNG gọi cho tới khi chủ dự án duyệt pilot (L4)
+tags:
+  - name: catalog
+  - name: lead-intake
+  - name: handoff
+  - name: telemetry
+
+security:
+  - AiLeadHmac: []
+
+paths:
+  /catalog:
+    get:
+      tags: [catalog]
+      operationId: getPublicCatalog
+      summary: Danh mục cơ sở đã xuất bản công khai theo từng Page của agent
+      description: |
+        Thân request RỖNG (0 byte), không query string. Trả về các Page mà agent này được phép phục vụ
+        (đã cấu hình trên Admin) kèm cơ sở đang hiển thị cho từng Page. Cache tối đa `maxAgeSeconds`.
+        Hỗ trợ `If-None-Match` với giá trị `etag` lần trước (header này KHÔNG nằm trong chuỗi ký) → `304`.
+      x-implementation-status: NOT_IMPLEMENTED_ON_TEST
+      parameters:
+        - $ref: '#/components/parameters/Contract'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/Ts'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Sig'
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: Danh mục hiện hành
+          headers:
+            ETag: { schema: { type: string } }
+            X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogResponse' }
+        '304':
+          description: Không đổi so với `If-None-Match` (thân rỗng)
+          headers:
+            X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /lead-intakes:
+    post:
+      tags: [lead-intake]
+      operationId: submitLeadIntake
+      summary: Gửi MỘT lần ghi nhận nhu cầu tư vấn (ghi mù — không đọc lại được)
+      description: |
+        Gửi những gì khách ĐÃ cung cấp tính tới thời điểm này; có thể gọi nhiều lần cho cùng một cuộc
+        hội thoại khi khách bổ sung thông tin (mỗi lần một `idempotencyKey` mới). Server gộp vào MỘT hồ
+        sơ đang mở theo (`pageId`, `psid`, `intent`). Việc hồ sơ có trở thành lead chính thức hay không,
+        có gộp vào hồ sơ cũ hay không do Admin quyết — Agent KHÔNG được biết (nguyên tắc N1) và `ACCEPTED`
+        KHÔNG bảo đảm một lead mới đã được tạo.
+        Cùng `idempotencyKey` + cùng body ⇒ trả lại ĐÚNG phản hồi cũ (header `Idempotent-Replay: true`).
+        Cùng `idempotencyKey` khác body ⇒ `409 IDEMPOTENCY_CONFLICT`.
+        Thứ tự ưu tiên khi nhiều điều kiện cùng xảy ra: (0) hội thoại đã KHÔNG còn do AI giữ ⇒ luôn `HUMAN_QUEUED`; rồi `INVALID_SELECTION` > `NEED_INFO` > `HUMAN_QUEUED` > `ACCEPTED`.
+        Một agent mà Admin đã đặt công tắc `INCOMPATIBLE` (xem heartbeat, P7) bị `400 UNSUPPORTED_CONTRACT` CHỈ ở endpoint này.
+      x-implementation-status: NOT_IMPLEMENTED_ON_TEST
+      parameters:
+        - $ref: '#/components/parameters/Contract'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/Ts'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Sig'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LeadIntakeRequest' }
+      responses:
+        '200':
+          description: Đã tiếp nhận (mọi `status` nghiệp vụ đều là HTTP 200)
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+            X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeadIntakeResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /handoffs:
+    post:
+      tags: [handoff]
+      operationId: requestHandoff
+      summary: Yêu cầu chuyển cuộc hội thoại cho nhân viên (QLCS)
+      description: |
+        Sau khi gọi (kể cả `ALREADY_*`), Agent PHẢI tuân `nextAction`. Cơ chế để Agent biết nhân viên đã
+        nhận hội thoại (để ngừng trả lời) là QUYẾT ĐỊNH CHƯA CHỐT — xem `handoff-guide.md` và `open-decisions.md` OD-02.
+      x-implementation-status: NOT_IMPLEMENTED_ON_TEST
+      parameters:
+        - $ref: '#/components/parameters/Contract'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/Ts'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Sig'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandoffRequest' }
+      responses:
+        '200':
+          description: Đã ghi nhận yêu cầu chuyển người
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+            X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandoffResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /incidents:
+    post:
+      tags: [telemetry]
+      operationId: reportIncident
+      summary: Báo sự cố kỹ thuật phía Agent (không kèm dữ liệu khách)
+      description: |
+        Chỉ mã + mức độ, KHÔNG văn bản tự do, KHÔNG PII, KHÔNG stack trace.
+        `idempotencyKey` định danh MỘT LẦN BÁO (gửi lại do lỗi mạng dùng cùng key + cùng thân); mỗi sự kiện
+        mới (occurredAt khác) PHẢI dùng key mới. Việc GỘP là việc của server: nhiều lần báo cùng
+        (agent, page, category, detailCode) trong một ngày (múi giờ Asia/Ho_Chi_Minh) được gộp thành một sự cố
+        và tăng bộ đếm. Admin chỉ phát cảnh báo theo bảng category × severity của Admin; `severity` do Agent khai chỉ là gợi ý.
+      x-implementation-status: NOT_IMPLEMENTED_ON_TEST
+      parameters:
+        - $ref: '#/components/parameters/Contract'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/Ts'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Sig'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentRequest' }
+      responses:
+        '200':
+          description: Đã ghi nhận
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+            X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /heartbeats:
+    post:
+      tags: [telemetry]
+      operationId: sendHeartbeat
+      summary: Nhịp sống có ký — bằng chứng kết nối L2 + nhận lệnh thăm dò
+      description: |
+        Gửi mặc định mỗi 60 giây (server có thể đổi qua `nextHeartbeatSeconds`) và ngay khi khởi động.
+        Một heartbeat hợp lệ CHỈ chứng minh "agent này, môi trường này, ký đúng, hợp đồng này" — nó
+        KHÔNG chứng minh webhook Meta đang hoạt động hay E2E chạy được (Admin tách riêng các tầng đó).
+        Thăm dò chủ động: khi HO bấm "Kiểm tra kết nối", response kế tiếp mang `probe`; Agent chép nguyên
+        `probeId` + `nonce` vào `probeAck` của heartbeat TIẾP THEO (không cần endpoint riêng).
+      x-implementation-status: NOT_IMPLEMENTED_ON_TEST
+      parameters:
+        - $ref: '#/components/parameters/Contract'
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/Ts'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Sig'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HeartbeatRequest' }
+      responses:
+        '200':
+          description: Đã ghi nhận nhịp sống
+          headers:
+            X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+            Cache-Control: { $ref: '#/components/headers/CacheControl' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HeartbeatResponse' }
+        default: { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    AiLeadHmac:
+      type: apiKey
+      in: header
+      name: X-AiLead-Sig
+      description: |
+        HMAC-SHA256. Khoá = các byte UTF-8 của chuỗi `agentSecret` (64 ký tự hex thường) — KHÔNG hex-decode.
+        Chuỗi ký = `METHOD\nPATH\nTS\nNONCE\nBODY_SHA256_HEX` (đúng 4 dấu LF, không LF cuối).
+        `PATH` = pathname đầy đủ như gửi, ví dụ `/api/ai-lead-agent/v1/heartbeats`.
+        `X-AiLead-Contract` và `Content-Type` KHÔNG được ký. Xem `authentication-guide.md`.
+
+  parameters:
+    Contract:
+      name: X-AiLead-Contract
+      in: header
+      required: true
+      description: Phiên bản hợp đồng. Giá trị duy nhất hiện hành là `1`.
+      schema: { type: string, enum: ['1'] }
+    AgentId:
+      name: X-AiLead-Agent
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[a-z0-9]{20,40}$' }
+    Ts:
+      name: X-AiLead-Ts
+      in: header
+      required: true
+      description: Unix epoch mili-giây, đúng 13 chữ số.
+      schema: { type: string, pattern: '^[0-9]{13}$' }
+    Nonce:
+      name: X-AiLead-Nonce
+      in: header
+      required: true
+      description: Ngẫu nhiên, MỚI cho mỗi request (kể cả gửi lại).
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{16,64}$' }
+    Sig:
+      name: X-AiLead-Sig
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+
+  headers:
+    ServerTime:
+      description: Unix ms theo đồng hồ máy chủ. CÓ trên MỌI response (kể cả lỗi và 304).
+      schema: { type: integer, format: int64 }
+    CacheControl:
+      description: Luôn là `no-store` (riêng `/catalog` có thể `private, max-age=<maxAgeSeconds>`).
+      schema: { type: string }
+    IdempotentReplay:
+      description: Có (`true`) khi phản hồi là bản phát lại của cùng `idempotencyKey` + cùng thân.
+      schema: { type: string, enum: ['true'] }
+
+  responses:
+    Error:
+      description: Lỗi — luôn dùng khung `ErrorEnvelope`. Bảng mã đầy đủ ở `error-codes.md`.
+      headers:
+        X-Server-Time: { $ref: '#/components/headers/ServerTime' }
+        Cache-Control: { $ref: '#/components/headers/CacheControl' }
+        Retry-After: { schema: { type: integer, minimum: 1 } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    # ───────────────────────── khung chung ─────────────────────────
+    Meta:
+      type: object
+      additionalProperties: false
+      required: [requestId, serverTime]
+      properties:
+        requestId: { type: string, pattern: '^req_[a-z0-9]{12,40}$' }
+        serverTime: { type: integer, format: int64, description: Unix ms }
+
+    ErrorCode:
+      type: string
+      enum:
+        - BAD_REQUEST
+        - UNSUPPORTED_CONTRACT
+        - PAYLOAD_INVALID
+        - BODY_TOO_LARGE
+        - UNSUPPORTED_MEDIA_TYPE
+        - BAD_SIGNATURE
+        - CLOCK_SKEW
+        - NONCE_REUSED
+        - AGENT_DISABLED
+        - PAGE_NOT_ALLOWED
+        - PAGE_PAUSED
+        - ENVIRONMENT_MISMATCH
+        - TEST_ONLY_FIELD
+        - IDEMPOTENCY_CONFLICT
+        - RATE_LIMITED
+        - NOT_CONFIGURED
+        - TEMP_UNAVAILABLE
+        - INTERNAL_ERROR
+
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok: { const: false }
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, requestId]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string, maxLength: 300, description: Tiếng Việt, ổn định để hiển thị cho vận hành — KHÔNG parse. }
+            field: { type: string, maxLength: 200, description: Đường dẫn khoá gây lỗi, ví dụ `conversation.psid`. }
+            requestId: { type: string, pattern: '^req_[a-z0-9]{12,40}$' }
+
+    # ───────────────────────── định danh cuộc hội thoại ─────────────────────────
+    PageId:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{5,64}$'
+      description: Facebook Page ID, do runtime lấy từ webhook Meta.
+    Psid:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{5,64}$'
+      description: Page-Scoped ID của khách. KHÔNG phải URL hồ sơ Facebook; không được dùng để dựng link.
+    MetaMessageId:
+      type: string
+      pattern: '^[A-Za-z0-9_=.:+/-]{8,256}$'
+      description: '`mid` của tin nhắn Messenger làm bằng chứng. KHÔNG gửi nội dung tin nhắn.'
+    IdempotencyKey:
+      type: string
+      pattern: '^(CONSULTATION_REQUEST|ENROLLMENT_REQUEST|TRIAL_CLASS_REQUEST|HANDOFF|INCIDENT):[0-9a-f]{40}:v[1-9][0-9]{0,2}$'
+      description: |
+        Dạng `<KIND>:<40 hex>:v<n>` với 40 hex = 40 ký tự đầu của sha256(UTF-8(seed)). `KIND` là giá trị `intent`
+        (cho `/lead-intakes`), `HANDOFF` hoặc `INCIDENT`. Seed và cách dựng: `lead-intake-guide.md`, mục idempotencyKey.
+        Ổn định theo sự kiện nguồn, không ngẫu nhiên mỗi lần gọi.
+    Receipt:
+      type: string
+      pattern: '^rct_[a-z0-9]{12,40}$'
+      description: Biên nhận đục, không mang ý nghĩa nghiệp vụ — không suy ra được lead/hồ sơ/sale từ nó. Chỉ để đối chiếu log.
+
+    Conversation:
+      type: object
+      additionalProperties: false
+      required: [pageId, psid]
+      properties:
+        pageId: { $ref: '#/components/schemas/PageId' }
+        psid: { $ref: '#/components/schemas/Psid' }
+        fbName:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 100
+          pattern: '^(?!\s*$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$'
+          description: |
+            Tên hiển thị Facebook của khách. Cấm toàn khoảng trắng và mọi ký tự thuộc nhóm Unicode Cc (điều khiển),
+            Cf (định dạng/đổi chiều/độ rộng bằng 0, kể cả ZWJ), Zl, Zp. Mẫu dùng `\p{..}` (chế độ unicode ECMA-262;
+            Python `re` không hỗ trợ — dùng module `regex` hoặc `unicodedata.category`). Agent LOẠI các ký tự bị cấm
+            trước khi gửi; còn rỗng ⇒ gửi `null`. Admin vẫn coi là dữ liệu không tin cậy. `null`/vắng ⇒ chưa lấy được (hồ sơ sẽ chờ nhân viên xác minh).
+        fbNameSource:
+          type: string
+          enum: [META_PROFILE_API, WEBHOOK_PAYLOAD, CUSTOMER_STATED]
+          description: |
+            Nguồn của `fbName`. Bắt buộc khi có `fbName`. `CUSTOMER_STATED` (khách tự gõ) KHÔNG được coi là
+            đã xác minh — hồ sơ chờ nhân viên.
+        inboxThreadId:
+          type: [string, 'null']
+          pattern: '^[A-Za-z0-9_-]{4,128}$'
+          description: |
+            Tuỳ chọn. ID cuộc hội thoại (Graph API `conversation.id`) nếu Agent lấy được, để Admin dựng
+            nút "Mở hội thoại Facebook". Admin KHÔNG BAO GIỜ dựng link từ `psid`, và chỉ dựng link từ một
+            mẫu cố định trên tên miền Meta với tham số đã mã hoá (xem OD-03).
+      allOf:
+        - if: { required: [fbName], properties: { fbName: { type: string } } }
+          then: { required: [fbNameSource] }
+
+    Intent:
+      type: string
+      enum: [CONSULTATION_REQUEST, ENROLLMENT_REQUEST, TRIAL_CLASS_REQUEST]
+      description: |
+        Chỉ gửi khi khách ĐÃ bày tỏ nhu cầu tư vấn/đăng ký/học thử rõ ràng. Lời chào hay hỏi thông tin
+        chung KHÔNG phải intent — đừng gọi endpoint.
+
+    # ───────────────────────── lead-intakes ─────────────────────────
+    LeadIntakeRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, idempotencyKey, conversation, intent, candidate]
+      properties:
+        schemaVersion: { const: '1.0' }
+        idempotencyKey: { $ref: '#/components/schemas/IdempotencyKey' }
+        conversation: { $ref: '#/components/schemas/Conversation' }
+        intent: { $ref: '#/components/schemas/Intent' }
+        candidate:
+          type: object
+          additionalProperties: false
+          description: Chỉ những gì khách ĐÃ cung cấp. Thiếu gì thì bỏ khoá đó — đừng gửi chuỗi rỗng, đừng đoán.
+          properties:
+            phoneRaw:
+              type: string
+              maxLength: 32
+              pattern: '^(?=.*[0-9])[0-9+().\- \u00A0]{1,32}$'
+              description: Đúng như khách gõ; server tự chuẩn hoá. Chỉ nhận di động VN (xem `lead-intake-guide.md` §Số điện thoại).
+            campusCode:
+              type: string
+              pattern: '^[A-Z0-9_-]{2,16}$'
+              description: '`campusCode` lấy từ `GET /catalog`, theo lựa chọn của KHÁCH.'
+            consent:
+              type: object
+              additionalProperties: false
+              required: [contactAllowed, messageMid]
+              description: |
+                Chỉ gửi khi khách NÓI RÕ đồng ý được liên hệ. Không có bằng chứng ⇒ bỏ khoá `consent`.
+                Suy diễn từ "khách chủ động nhắn tin" KHÔNG phải sự đồng ý.
+              properties:
+                contactAllowed: { const: true }
+                messageMid: { $ref: '#/components/schemas/MetaMessageId' }
+        evidence:
+          type: object
+          additionalProperties: false
+          description: '`mid` của tin nhắn chứa từng dữ liệu. Bắt buộc theo từng trường có mặt trong `candidate`.'
+          properties:
+            phoneMessageMid: { $ref: '#/components/schemas/MetaMessageId' }
+            campusMessageMid: { $ref: '#/components/schemas/MetaMessageId' }
+        catalogVersion:
+          type: integer
+          minimum: 1
+          description: Phiên bản catalog Agent đang dựa vào để hỏi khách. Server vẫn kiểm lại lúc ghi.
+        testRunId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{8,64}$'
+          description: CHỈ chấp nhận trên môi trường TEST (PROD ⇒ `400 TEST_ONLY_FIELD`). Đánh dấu dữ liệu tổng hợp.
+      allOf:
+        - if: { properties: { candidate: { required: [phoneRaw] } }, required: [candidate] }
+          then: { required: [evidence], properties: { evidence: { required: [phoneMessageMid] } } }
+        - if: { properties: { candidate: { required: [campusCode] } }, required: [candidate] }
+          then: { required: [evidence], properties: { evidence: { required: [campusMessageMid] } } }
+
+    LeadIntakeStatus:
+      type: string
+      enum: [ACCEPTED, NEED_INFO, HUMAN_QUEUED, INVALID_SELECTION]
+      description: |
+        - `ACCEPTED`: Gateway đã nhận đủ dữ liệu để Admin xử lý tiếp; nói lời cảm ơn chung chung. KHÔNG hứa "đã tạo hồ sơ/đã có người phụ trách" — `ACCEPTED` không bảo đảm lead mới được tạo (có thể gộp vào hồ sơ cũ hoặc chờ duyệt).
+        - `NEED_INFO`: còn thiếu/không hợp lệ thứ khách có thể cung cấp — hỏi tiếp theo `askFields`.
+        - `HUMAN_QUEUED`: đã chuyển nhân viên xử lý (thiếu dữ liệu mà khách không thể bổ sung ở đây, ví dụ chưa xác minh được tên Facebook) — báo nhân viên sẽ liên hệ.
+        - `INVALID_SELECTION`: cơ sở khách chọn không còn hợp lệ/nhận khách — LUÔN kèm `refreshCatalog: true`; làm mới catalog rồi hỏi lại cơ sở.
+        Thứ tự ưu tiên khi nhiều điều kiện cùng xảy ra: (0) hội thoại đã KHÔNG còn do AI giữ ⇒ luôn `HUMAN_QUEUED`; rồi `INVALID_SELECTION` > `NEED_INFO` > `HUMAN_QUEUED` > `ACCEPTED`.
+        `TEMP_UNAVAILABLE` KHÔNG nằm ở đây: nó là lỗi HTTP 503 (xem `error-codes.md`).
+
+    LeadIntakeNextAction:
+      type: string
+      enum: [ACKNOWLEDGE_GENERIC, ASK_FIELDS, TELL_STAFF_WILL_CONTACT, RE_ASK_CAMPUS]
+
+    LeadIntakeResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data, meta]
+      properties:
+        ok: { const: true }
+        data:
+          type: object
+          additionalProperties: false
+          required: [receiptId, status, nextAction]
+          properties:
+            receiptId: { $ref: '#/components/schemas/Receipt' }
+            status: { $ref: '#/components/schemas/LeadIntakeStatus' }
+            nextAction: { $ref: '#/components/schemas/LeadIntakeNextAction' }
+            askFields:
+              type: array
+              items: { type: string, enum: [phone, campus] }
+              enum: [[phone], [campus], [phone, campus]]
+              description: Thứ tự CỐ ĐỊNH (`phone` trước `campus`). Có mặt ⇔ `nextAction = ASK_FIELDS`.
+            refreshCatalog:
+              type: boolean
+              description: 'Chỉ có (và luôn `true`) khi `status = INVALID_SELECTION`. Gọi lại `GET /catalog` trước khi hỏi lại cơ sở.'
+          allOf:
+            - if: { properties: { status: { const: ACCEPTED } }, required: [status] }
+              then: { properties: { nextAction: { const: ACKNOWLEDGE_GENERIC } }, not: { anyOf: [ { required: [askFields] }, { required: [refreshCatalog] } ] } }
+            - if: { properties: { status: { const: NEED_INFO } }, required: [status] }
+              then: { properties: { nextAction: { const: ASK_FIELDS } }, required: [askFields], not: { required: [refreshCatalog] } }
+            - if: { properties: { status: { const: HUMAN_QUEUED } }, required: [status] }
+              then: { properties: { nextAction: { const: TELL_STAFF_WILL_CONTACT } }, not: { anyOf: [ { required: [askFields] }, { required: [refreshCatalog] } ] } }
+            - if: { properties: { status: { const: INVALID_SELECTION } }, required: [status] }
+              then: { properties: { nextAction: { const: RE_ASK_CAMPUS }, refreshCatalog: { const: true } }, required: [refreshCatalog], not: { required: [askFields] } }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ───────────────────────── handoffs ─────────────────────────
+    HandoffReason:
+      type: string
+      description: |
+        `SYSTEM_UNAVAILABLE`: Agent không thể thu thập tiếp vì lý do hệ thống (Gateway hỏng kéo dài, catalog quá hạn,
+        Page không có cơ sở nhận khách, build bị `INCOMPATIBLE`). `INTAKE_PAUSED`: Page đang `PAUSED` hoặc nhận `PAGE_PAUSED`.
+      enum:
+        - CUSTOMER_REQUESTED_HUMAN
+        - OUT_OF_SCOPE
+        - COMPLAINT_OR_SENSITIVE
+        - PRICE_OR_PAYMENT
+        - AI_UNCERTAIN
+        - REPEATED_FAILURE
+        - SYSTEM_UNAVAILABLE
+        - INTAKE_PAUSED
+
+    HandoffRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, idempotencyKey, conversation, reasonCode]
+      properties:
+        schemaVersion: { const: '1.0' }
+        idempotencyKey: { $ref: '#/components/schemas/IdempotencyKey' }
+        conversation: { $ref: '#/components/schemas/Conversation' }
+        reasonCode: { $ref: '#/components/schemas/HandoffReason' }
+        testRunId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{8,64}$'
+
+    HandoffResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data, meta]
+      properties:
+        ok: { const: true }
+        data:
+          type: object
+          additionalProperties: false
+          required: [receiptId, handoffStatus, ownerMode, nextAction]
+          properties:
+            receiptId: { $ref: '#/components/schemas/Receipt' }
+            handoffStatus:
+              type: string
+              enum: [QUEUED, ALREADY_QUEUED, ALREADY_HUMAN_OWNED]
+            ownerMode:
+              type: string
+              enum: [HANDOFF_REQUESTED, HUMAN_ACTIVE, PAUSED]
+              description: |
+                Trạng thái QUẢN LÝ của cuộc hội thoại trên Admin tại thời điểm trả lời. Chỉ mang tính tham khảo:
+                người quyết định ai được gửi tin là Meta (thread control) — xem OD-02.
+            nextAction:
+              type: string
+              enum: [SEND_HOLDING_MESSAGE, STAY_SILENT]
+              description: |
+                Bảng cố định: `QUEUED` → `SEND_HOLDING_MESSAGE` (gửi ĐÚNG MỘT tin chờ). `ALREADY_QUEUED` → `STAY_SILENT`
+                (tin chờ đã gửi ở lần trước; không gửi lần hai). `ALREADY_HUMAN_OWNED` → `STAY_SILENT`.
+                `STAY_SILENT` chỉ cấm TIN CHỜ của lần gọi này; việc Agent có được trả lời các tin kế tiếp của khách hay
+                không do thread control của Meta quyết định (OD-02, OD-11). Phát lại (`Idempotent-Replay`) của `QUEUED`
+                lại mang `SEND_HOLDING_MESSAGE`: Agent PHẢI ghi bền cờ "đã gửi tin chờ" trước khi gửi và bỏ qua nếu cờ đã có.
+          allOf:
+            - if: { properties: { handoffStatus: { const: QUEUED } }, required: [handoffStatus] }
+              then: { properties: { ownerMode: { const: HANDOFF_REQUESTED }, nextAction: { const: SEND_HOLDING_MESSAGE } } }
+            - if: { properties: { handoffStatus: { const: ALREADY_QUEUED } }, required: [handoffStatus] }
+              then: { properties: { ownerMode: { const: HANDOFF_REQUESTED }, nextAction: { const: STAY_SILENT } } }
+            - if: { properties: { handoffStatus: { const: ALREADY_HUMAN_OWNED } }, required: [handoffStatus] }
+              then: { properties: { ownerMode: { enum: [HUMAN_ACTIVE, PAUSED] }, nextAction: { const: STAY_SILENT } } }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ───────────────────────── incidents ─────────────────────────
+    IncidentRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, idempotencyKey, category, severity, detailCode, occurredAt]
+      properties:
+        schemaVersion: { const: '1.0' }
+        idempotencyKey: { $ref: '#/components/schemas/IdempotencyKey' }
+        pageId: { $ref: '#/components/schemas/PageId' }
+        category:
+          type: string
+          enum:
+            - WEBHOOK_FAILURE
+            - META_API_ERROR
+            - TOKEN_INVALID
+            - GATEWAY_CLIENT_ERROR
+            - MODEL_ERROR
+            - POLICY_BLOCKED
+            - CATALOG_STALE
+            - OTHER
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        detailCode:
+          type: string
+          enum:
+            - SIGNATURE_MISMATCH
+            - WEBHOOK_TIMEOUT
+            - WEBHOOK_NO_EVENTS
+            - META_RATE_LIMITED
+            - META_API_ERROR
+            - TOKEN_EXPIRED
+            - TOKEN_REVOKED
+            - GATEWAY_5XX_PERSISTENT
+            - GATEWAY_RETRY_EXHAUSTED
+            - CATALOG_FETCH_FAILED
+            - CATALOG_STALE_OVER_LIMIT
+            - MODEL_TIMEOUT
+            - MODEL_OUTPUT_REJECTED
+            - POLICY_BLOCKED_OUTPUT
+            - CONTRACT_DRIFT
+            - OTHER_UNSPECIFIED
+          description: Danh sách ĐÓNG. Mã ngoài danh sách ⇒ `PAYLOAD_INVALID`. Muốn thêm mã phải đổi hợp đồng.
+        occurredAt: { type: string, format: date-time, description: 'ISO-8601 có offset (`+07:00` hoặc `Z`); lệch quá 24 giờ so với giờ server ⇒ PAYLOAD_INVALID (P9).' }
+        correlationId: { type: string, pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', description: UUID chữ thường. }
+
+    IncidentResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data, meta]
+      properties:
+        ok: { const: true }
+        data:
+          type: object
+          additionalProperties: false
+          required: [receiptId, accepted]
+          properties:
+            receiptId: { $ref: '#/components/schemas/Receipt' }
+            accepted: { const: true }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ───────────────────────── heartbeats ─────────────────────────
+    Environment:
+      type: string
+      enum: [TEST, PROD]
+
+    HeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, environment, agentVersion, buildSha, contractHash, capabilities, pages, sentAt]
+      properties:
+        schemaVersion: { const: '1.0' }
+        environment: { $ref: '#/components/schemas/Environment' }
+        agentVersion: { type: string, pattern: '^[0-9A-Za-z.+-]{1,32}$' }
+        buildSha: { type: string, pattern: '^[0-9a-f]{7,40}$' }
+        contractHash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 của bản `api-contract-v1.yaml` mà bản build này tuân theo (LF-chuẩn hoá).
+        catalogVersionSeen:
+          type: [integer, 'null']
+          minimum: 1
+        capabilities:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [CATALOG_FETCH, LEAD_INTAKE, HANDOFF, INCIDENT_REPORT] }
+        pages:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [pageId, lastWebhookEventAt]
+            properties:
+              pageId: { $ref: '#/components/schemas/PageId' }
+              lastWebhookEventAt:
+                type: [string, 'null']
+                format: date-time
+                description: Lần cuối Agent nhận một sự kiện thật từ Meta cho Page này (`null` nếu chưa từng).
+        probeAck:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [probeId, nonce]
+          properties:
+            probeId: { type: string, pattern: '^prb_[a-z0-9]{12,40}$' }
+            nonce: { type: string, pattern: '^[A-Za-z0-9_-]{16,64}$' }
+        sentAt: { type: string, format: date-time }
+
+    HeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data, meta]
+      properties:
+        ok: { const: true }
+        data:
+          type: object
+          additionalProperties: false
+          required: [serverTime, nextHeartbeatSeconds, contractStatus, latestCatalogVersion, pages, probe]
+          properties:
+            serverTime: { type: integer, format: int64 }
+            nextHeartbeatSeconds: { type: integer, minimum: 15, maximum: 90, description: 'Admin coi agent STALE sau 3 × giá trị này (mặc định 60 ⇒ 180 giây).' }
+            contractStatus:
+              type: string
+              enum: [COMPATIBLE, DEPRECATED, INCOMPATIBLE]
+              description: '`INCOMPATIBLE` (công tắc Admin đặt tay theo `agentId`, P7) ⇒ Admin từ chối `/lead-intakes` bằng `400 UNSUPPORTED_CONTRACT`; Agent ngừng gọi `/lead-intakes`. `/handoffs`, `/incidents`, `/heartbeats`, `/catalog` vẫn dùng được.'
+            latestCatalogVersion: { type: integer, minimum: 1 }
+            pages:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [pageId, state]
+                properties:
+                  pageId: { $ref: '#/components/schemas/PageId' }
+                  state:
+                    type: string
+                    enum: [ENABLED, PAUSED]
+                    description: '`PAUSED` (HO bấm tạm dừng) ⇒ ngừng gọi `/lead-intakes` cho Page này; vẫn được dùng `/handoffs`.'
+            probe:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [probeId, nonce, expiresAt]
+              properties:
+                probeId: { type: string, pattern: '^prb_[a-z0-9]{12,40}$' }
+                nonce: { type: string, pattern: '^[A-Za-z0-9_-]{16,64}$' }
+                expiresAt: { type: string, format: date-time }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ───────────────────────── catalog ─────────────────────────
+    CatalogCampus:
+      type: object
+      additionalProperties: false
+      required: [campusCode, name, address, acceptingLeads]
+      properties:
+        campusCode: { type: string, pattern: '^[A-Z0-9_-]{2,16}$' }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        address: { type: string, minLength: 1, maxLength: 400 }
+        acceptingLeads:
+          type: boolean
+          description: '`false` ⇒ KHÔNG mời khách chọn cơ sở này (vẫn có thể giới thiệu địa chỉ nếu khách hỏi).'
+
+    CatalogResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data, meta]
+      properties:
+        ok: { const: true }
+        data:
+          type: object
+          additionalProperties: false
+          required: [catalogVersion, publishedAt, maxAgeSeconds, etag, pages]
+          properties:
+            catalogVersion: { type: integer, minimum: 1 }
+            publishedAt: { type: string, format: date-time }
+            maxAgeSeconds: { type: integer, minimum: 30, maximum: 3600 }
+            etag: { type: string, maxLength: 128 }
+            pages:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [pageId, campuses]
+                properties:
+                  pageId: { $ref: '#/components/schemas/PageId' }
+                  campuses:
+                    type: array
+                    items: { $ref: '#/components/schemas/CatalogCampus' }
+        meta: { $ref: '#/components/schemas/Meta' }
