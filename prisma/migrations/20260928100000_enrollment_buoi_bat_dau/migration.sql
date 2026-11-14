@@ -1,0 +1,20 @@
+-- PHẠM VI BUỔI CỦA MỘT GHI DANH [28/09/2026].
+--
+-- Chủ dự án: *"đăng ký 39 buổi thì sẽ bắt đầu học từ buổi 10 → 48, để khi thêm vào lớp học
+-- thì chỉ được học và điểm danh từ buổi 10 → 48, các buổi không đăng ký thì bỏ qua"*.
+--
+-- Chỉ cần MỘT cột: buổi cuối LUÔN là buổi cuối của khoá, nên `buoiBatDau` xác định trọn
+-- phạm vi. Thêm cột `buoiKetThuc` là mời hai cột lệch nhau ở lần ai đó đổi một bên.
+--
+-- Luật ở `lib/orders/dot-theo-hoc-phan.ts` (`phamViBuoiDangKy` — tính lúc ghi danh) và
+-- `lib/orders/buoi-duoc-hoc.ts` (`xetBuoiDuocHoc` — hỏi lúc đọc).
+--
+-- THUẦN THÊM: ADD COLUMN nullable, KHÔNG backfill, KHÔNG index, KHÔNG ALTER kiểu.
+--
+-- ⚠️ `NULL` = "học đủ khoá", và mọi ghi danh có trước hôm nay đều mang giá trị đó. Cổng
+-- đọc FAIL-OPEN với `NULL` một cách có chủ đích: fail-closed nghĩa là toàn bộ học viên
+-- đang học biến mất khỏi mọi bảng điểm danh ngay hôm triển khai — hỏng to hơn hẳn lỗ nó
+-- định bịt, và hỏng với những người không liên quan tới tính năng này.
+--
+-- ⚠️ KHÔNG `ENABLE ROW LEVEL SECURITY`: luật ấy dành cho BẢNG MỚI. `Enrollment` đã tồn tại.
+ALTER TABLE "Enrollment" ADD COLUMN IF NOT EXISTS "buoiBatDau" INTEGER;

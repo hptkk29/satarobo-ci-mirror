@@ -1,0 +1,165 @@
+/* PHẦN BỔ SUNG CỦA REPO (không có trong artifact): nâng nút nổi trên banner cookie, biến thể điện thoại của nút DISC, .no-anim, form/popup/cookie/404, và các khối do agent trang vòng 1 thêm (trang chủ, tin tức, tuyển dụng). Mọi selector nằm dưới `.page`. Các khối trang vòng 1 sẽ biến mất khi trang được viết lại theo artifact. */
+/* ===== Bổ sung của repo (không có trong artifact) ===== */
+/* Nút nổi + thanh đáy nâng lên trên banner cookie (biến do FloatingCta đặt). */
+.page .fab{bottom:calc(22px + var(--nang-banner,0px))}
+.page .mbar{bottom:var(--nang-banner,0px)}
+@media (max-width:860px){.page .fab{bottom:calc(84px + var(--nang-banner,0px))}}
+/* Điểm neo: chừa chiều cao thanh trên dính khi nhảy tới #lien-he… */
+.page [id]{scroll-margin-top:84px}
+/* Trang không-animation (Liên hệ, Tuyển dụng, pháp lý): thêm .no-anim vào thẻ bọc để tắt mọi chuyển động bên trong. */
+.page .no-anim,.page .no-anim *,.page .no-anim *::before,.page .no-anim *::after{animation:none!important;transition:none!important}
+.page .no-anim .sv,.page .no-anim .sv *{opacity:1!important;transform:none!important}
+/* Biến thể điện thoại của viên thuốc DISC: chỉ hiện ở ≤860px (biến thể máy tính dùng .hide-sm). */
+.page .pub-show-sm{display:none!important}
+@media (max-width:860px){.page .fab a.disc-pill.pub-show-sm{display:inline-flex!important}}
+
+/* ===== PUB-1 · B — Liên hệ · form đặt học thử · popup · cookie · 404 ===== */
+/* Lỗi từng ô + viền đỏ khi ô sai (artifact không vẽ trạng thái lỗi; thêm để form THẬT báo lỗi được). */
+.page .pub-err{margin:0;font-size:13px;font-weight:600;color:#c2271d}
+.page.theme-dark .pub-err{color:#ff8a80}
+.page .inp[aria-invalid="true"]{border-color:#e5484d;box-shadow:0 0 0 4px rgba(229,72,77,.14)}
+/* Ô tích Chính sách bảo mật (component OTichChinhSach dùng chung) theo kiểu artifact. */
+.page .pub-ok{font-size:14px;color:var(--text)}
+.page .pub-ok label{font-size:14px;line-height:1.5;gap:10px;color:var(--text)}
+.page .pub-ok input[type="checkbox"]{width:20px;height:20px;margin:1px 0 0;accent-color:#f97316;flex-shrink:0;border-radius:4px}
+.page .pub-ok a{color:var(--accT)!important;text-decoration:underline;text-underline-offset:2px}
+.page .pub-ok p{font-size:13px;font-weight:600;color:#c2271d}
+.page.theme-dark .pub-ok p{color:#ff8a80}
+.page .pub-ok-sm label{font-size:13px}
+.page .pub-ok-sm input[type="checkbox"]{width:18px;height:18px}
+/* Hộp thoại học thử (popup): khung cuộn theo artifact, không tràn màn hình thấp. */
+.page .pub-pop-x{background:none;border:0;color:var(--muted);font:inherit;font-size:13px;cursor:pointer;text-decoration:underline;min-height:44px}
+/* Menu điện thoại nằm trong .nav (MobileNavDrawer) nên cần chặn các luật `.nav .btn-acc` thu nhỏ của thanh trên. */
+@media (max-width:640px){.page .mnav .btn-acc{padding:0 20px!important;font-size:15px}}
+@media (max-width:480px){.page .mnav .btn-acc{width:auto;padding:0 20px!important}.page .mnav .btn-acc span{display:inline}}
+
+/* Banner cookie (PUB-1·B): panel dính đáy theo token; nằm trong .page (public) hoặc tự mang class .page (legacy/auth). */
+.page.pub-ck,.page .pub-ck{position:fixed;left:0;right:0;bottom:0;z-index:70;background:var(--panel);color:var(--text);border-top:1px solid var(--line2);box-shadow:0 -18px 44px var(--shadow);font-size:15px;line-height:1.55}
+.page.pub-ck{overflow:visible;min-height:0}
+.page .pub-ck-in{max-width:1240px;margin:0 auto;padding:16px clamp(16px,3vw,28px)}
+.page .pub-ck-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px 24px}
+.page .pub-ck-text{flex:1 1 380px;min-width:0}
+.page .pub-ck-text p{margin:0;color:var(--muted)}
+.page .pub-ck-text p.pub-ck-title{color:var(--text);font-weight:700;margin-bottom:2px}
+.page .pub-ck-text a{color:var(--accT);text-decoration:underline;text-underline-offset:2px}
+.page .pub-ck .ck-act .btn{white-space:nowrap}
+.page .pub-ck-custom{display:grid;gap:10px;max-height:calc(100vh / var(--pz,1) - 32px);overflow-y:auto}
+.page .pub-ck-h2{font-family:var(--font-unbounded),'Unbounded',sans-serif;font-size:16px;font-weight:600;margin:0}
+.page .pub-ck-sub{margin:2px 0 0;color:var(--muted);font-size:14px}
+.page .pub-ck-end{justify-content:flex-end}
+@media (max-width:560px){.page .pub-ck .ck-act{width:100%}.page .pub-ck .ck-act .btn{flex:1 1 auto;padding:0 12px}}
+
+/* ===== PUB-1 · C — Bài viết tin tức (nội dung markdown) ===== */
+/* Khối bài viết: bảng màu của Tailwind typography trỏ về token → đúng cả chủ đề tối. */
+.page .pub-md{--tw-prose-body:var(--text);--tw-prose-headings:var(--text);--tw-prose-lead:var(--muted);--tw-prose-links:var(--accT);--tw-prose-bold:var(--text);--tw-prose-counters:var(--muted);--tw-prose-bullets:#fe8f2d;--tw-prose-hr:var(--line);--tw-prose-quotes:var(--text);--tw-prose-quote-borders:#fe8f2d;--tw-prose-captions:var(--muted);--tw-prose-code:var(--accT);--tw-prose-pre-code:var(--text);--tw-prose-pre-bg:var(--panel2);--tw-prose-th-borders:var(--line2);--tw-prose-td-borders:var(--line)}
+.page .pub-md h3{font-size:clamp(18px,1.5vw,22px);margin:28px 0 10px}
+.page .pub-md ol{margin:0 0 20px;padding-left:22px}
+.page .pub-md ol li::marker{color:var(--accT);font-weight:700}
+.page .pub-md blockquote{padding-right:24px}
+.page .pub-md blockquote p{margin:0}
+.page .pub-md code::before,.page .pub-md code::after{content:none}
+.page .pub-md :not(pre)>code{background:var(--panel2);padding:2px 6px;border-radius:6px;font-size:.88em}
+.page .pub-md .pub-pre{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:16px;overflow-x:auto;font-size:14px;margin:0 0 20px}
+.page .pub-md img{border-radius:18px}
+.page .pub-md table{width:100%;border-collapse:collapse;font-size:15px}
+.page .pub-md th,.page .pub-md td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left}
+/* Tailwind preflight đặt svg {display:block}; artifact để svg inline (mặc định trình duyệt). :where() ⇒ độ ưu tiên 0, mọi luật `.x svg{…}` của artifact vẫn thắng. */
+:where(.page) svg{display:inline}
+
+/* ===== Vầng sáng theo chuột trên màn rộng (zoom của .page) =====
+   Ở ≥1920px `.page` có `zoom` (chung.css). fx.js tính toạ độ chuột bằng getBoundingClientRect() — số đã NHÂN zoom —
+   rồi gán làm px cục bộ cho --gx/--gy (lưới sáng) và --mx/--my (thẻ), nên trình duyệt nhân zoom thêm một lần nữa:
+   vầng sáng lệch khỏi con trỏ đúng hệ số zoom (1.18× ở 1920px, tức ~150px khi chuột cách mép 840px).
+   Cách sửa: --pz = đúng hệ số zoom đang áp cho .page, và chia lại toạ độ trước khi vẽ. fx.js giữ nguyên.
+   Số --pz PHẢI khớp các dòng `.page{zoom:…}` ở chung.css (pub-design.test.ts canh). */
+.page{--pz:1}
+@media (min-width:1920px){.page{--pz:1.18}}
+@media (min-width:2400px){.page{--pz:1.45}}
+@media (min-width:3200px){.page{--pz:1.9}}
+@media (min-width:3800px){.page{--pz:2.3}}
+@media (min-width:5000px){.page{--pz:3}}
+@media (min-width:7000px){.page{--pz:4.4}}
+html:not(.fx-lite) .page .gridbg{background-image:radial-gradient(260px circle at calc(var(--gx,-600px) / var(--pz,1)) calc(var(--gy,-600px) / var(--pz,1)),rgba(254,143,45,.13),rgba(184,75,232,.06) 45%,transparent 70%),linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:100% 100%,72px 72px,72px 72px}
+.page :is(.card,.course-card,.news-card,.job,.ex-hp,.pol-card,.plan,.phase,.fact)::before{background-image:radial-gradient(420px circle at calc(var(--mx) / var(--pz,1)) calc(var(--my) / var(--pz,1)),rgba(254,143,45,.16),rgba(184,75,232,.10) 40%,transparent 70%)}
+.page .soc-card::before{background:radial-gradient(420px circle at calc(var(--mx) / var(--pz,1)) calc(var(--my) / var(--pz,1)),color-mix(in srgb,var(--brand) 24%,transparent),transparent 70%)!important}
+
+/* ── 04/11/2026 — ba lỗi nghiệm thu giao diện public ───────────────────────────────────────────────────────────
+
+   [PUB2-07] Hai thẻ «Phổ biến nhất» ở trang chủ nhảy liên tục. Thẻ mang cả `.iri` (viền cầu vồng: `animation:srp-iri 8s … infinite`) lẫn `.a-flip`
+   (hiệu ứng lật khi cuộn vào: chỉ đổi `animation-name` sang srp-flipIn). Thuộc tính `animation-iteration-count:infinite` của `.iri` còn nguyên, nên srp-flipIn
+   LẶP VÔ HẠN (đo trên trình duyệt thật: srp-flipIn ×Infinity, running) và vòng lặp «lật vào» đè mất chính hiệu ứng viền. Sửa: hai animation riêng — lật vào MỘT lần,
+   viền cầu vồng vẫn chạy mãi. chung.css (chép nguyên văn từ artifact) giữ nguyên. */
+.page .iri.sv.a-flip{animation-name:srp-flipIn,srp-iri;animation-duration:.7s,8s;animation-timing-function:cubic-bezier(.2,.8,.2,1),ease;animation-iteration-count:1,infinite;animation-fill-mode:both,none}
+.page .iri.sv.a-flip.d2{animation-delay:.08s,0s}
+.page .iri.sv.a-flip.d3{animation-delay:.16s,0s}
+
+/* [PUB2-08] Lưới «Ưu đãi khai trương» (trang Khoá học) từng là auto-fit/minmax(190px): ở màn rộng (.page có zoom) chia ra 5 cột nên thẻ thứ 6 rơi xuống một mình.
+   Nay 1 → 2 → 3 cột theo độ rộng: 6 thẻ luôn thành hàng đều (3×2, 2×3, 1×6). */
+.page .uu-dai-grid{display:grid;gap:12px;grid-template-columns:1fr}
+@media (min-width:560px){.page .uu-dai-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (min-width:900px){.page .uu-dai-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* [PUB2-09] Trang Đăng nhập: linh vật 3D (`.orbit .center`, z-index:2 ở disc-ket-qua.css) đè lên các thẻ ảnh quay quanh (`.orbit .spinner`, không có z-index) nên bệ
+   của robot che mất một thẻ. Chủ dự án muốn 3D nằm DƯỚI các ảnh ⇒ lớp thẻ ảnh cao hơn lớp 3D. Thẻ chỉ để trang trí (aria-hidden) nên không bắt chuột: kéo xoay 3D vẫn được. */
+.page .orbit .spinner{z-index:3;pointer-events:none}
+
+/* [PUB2-10] Hiệu ứng tiêu đề thay cho «xáo ký tự» của fx.js (đã chặn ở pub-fx.tsx). Hoàn toàn CSS: tiêu đề h1/h2 trồi lên + hết mờ khi VÀO màn hình, bám theo vị trí cuộn
+   (animation-timeline: view()) nên không có JS, không timer, không chờ — chữ đọc được ngay từ khung hình đầu, chỉ chuyển động ~0,4 giây theo tay cuộn.
+   Trình duyệt chưa hỗ trợ view() (Firefox) ⇒ tiêu đề hiện thẳng, không hiệu ứng (đúng yêu cầu «nhanh hơn»). Tắt hẳn khi chọn «giảm chuyển động» hoặc chế độ nhẹ. */
+@keyframes pub-tieu-de{from{opacity:0;transform:translateY(.32em);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
+@supports (animation-timeline: view()){
+  @media (prefers-reduced-motion:no-preference){
+    html:not(.fx-lite) .page main :is(h1,h2){animation:pub-tieu-de linear both;animation-timeline:view();animation-range:entry 0% entry 45%}
+  }
+}
+
+/* [PUB2-11] Màn rộng (≥1920px) tràn trang ở Đăng nhập / Kích hoạt (04/11/2026). `.page` có `zoom` (1.18 → 2.3, chung.css) và mọi chiều dài trong nó bị NHÂN zoom — kể cả `100vh`.
+   `.auth{min-height:100vh}` thành 100vh × zoom: đo ở 2400×1350 (zoom 1.45) trang cao 2062px, tràn 712px; ở 3840×2160 tràn 2913px. Cách sửa cùng họ với --pz của vầng sáng chuột:
+   chia chiều cao theo cửa sổ cho --pz trước khi nhân lại. Cùng lỗi ở hộp thoại và menu điện thoại (max-height theo vh); bảng cookie tuỳ chỉnh sửa tại chỗ ở luật `.pub-ck-custom` phía trên; thẻ bọc `PubRoot` đặt minHeight theo --pz trong pub-root.tsx. */
+.page .auth{min-height:calc(100vh / var(--pz,1))}
+.page .modal-card{max-height:calc(100vh / var(--pz,1) - 32px)}
+.page .mnav{max-height:calc(100vh / var(--pz,1) - 72px)}
+/* Chatbot website (06/11/2026): nút tròn trong cụm nổi — chỉ điện thoại, nơi nhân vật .hi bị ẩn. */
+.page .fab .chatbot-nut-sm{display:none}
+@media (max-width:860px){.page .fab .chatbot-nut-sm{display:flex}}
+/* Nhân vật dạng <button> (chatbot bật): quy tắc gốc `.fab a` cho display:flex chỉ áp thẻ <a>. KHÔNG đặt display inline —
+   style inline thắng quy tắc ẩn nhân vật dưới 861px (đã đo 07/11: robot đè nội dung ở 375px). */
+.page .fab button.hi{display:flex}
+@media (max-width:860px){.page .fab button.hi{display:none}}
+
+/* ───────── «Góc gia đình» (10/11/2026): gom DISC · Tủ sách · Sức khỏe thành MỘT lối vào ─────────
+   Ba nơi vẽ: thanh trên (.nav-goc*, ≥1181px), menu điện thoại (.mnav-nhom*), nút nổi (.goc-nut* / .goc-pill).
+   Không dùng đơn vị vh (khối .page có zoom — xem [PUB2-11]). Mọi selector dưới `.page` để không rò ra ngoài. */
+@keyframes pub-goc-xuong{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes pub-goc-len{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.page .goc-bt,.page .mnav-nhom-bt{width:32px;height:32px;border-radius:10px;background:var(--chip);color:var(--purT);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+
+/* thanh trên */
+.page .nav-goc{position:relative;display:inline-flex;align-items:center}
+.page .nav-goc-btn{display:inline-flex;align-items:center;gap:5px;background:transparent;border:0;padding:0;font:inherit;color:var(--muted);cursor:pointer;white-space:nowrap}
+.page .nav-goc-btn:hover{color:var(--accT)}
+.page .nav-goc-btn.on{color:var(--text);font-weight:700}
+.page .nav-goc-mui{transition:rotate .2s}
+.page .nav-goc-btn[aria-expanded="true"] .nav-goc-mui{rotate:180deg}
+.page .nav-goc-panel{position:absolute;top:calc(100% + 14px);left:50%;translate:-50% 0;z-index:60;min-width:224px;padding:8px;border-radius:16px;background:var(--panel);border:1px solid var(--line2);box-shadow:0 22px 44px var(--shadow);display:grid;gap:2px;animation:pub-goc-xuong .18s cubic-bezier(.2,.8,.2,1) both}
+.page .nav-links .nav-goc-panel a{display:flex;align-items:center;gap:10px;min-height:46px;padding:0 14px 0 8px;border-radius:12px;color:var(--text);font-weight:600;font-size:14.5px;text-decoration:none}
+.page .nav-links .nav-goc-panel a:hover{background:var(--panel2);color:var(--text)}
+.page .nav-links .nav-goc-panel a.on{color:var(--accT);font-weight:700}
+
+/* menu điện thoại */
+.page .mnav-nhom{display:grid;padding:12px 0 2px;border-bottom:1px solid var(--line)}
+.page .mnav-nhom-t{padding:0 4px 4px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.page .mnav-links .mnav-nhom a{gap:12px;min-height:50px;border-bottom:0;font-size:16px}
+
+/* nút nổi */
+.page .fab .goc-nut{position:relative;display:flex;flex-direction:column;align-items:flex-end}
+.page .fab .goc-pill{width:auto;height:auto;min-height:44px;padding:0 14px 0 8px;display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-weight:700;font-size:14px;white-space:nowrap;text-decoration:none;color:#fff;background:linear-gradient(135deg,#5b1a8f,#8b3fd9 60%,#b84be8);box-shadow:0 10px 26px rgba(107,33,168,.45),inset 0 0 0 1px rgba(255,255,255,.18);transition:transform .25s}
+.page .fab a.goc-pill:hover,.page .fab button.goc-pill:hover{transform:translateY(-2px)}
+.page .goc-pill-bt{width:30px;height:30px;border-radius:999px;background:rgba(255,255,255,.18);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.page .goc-pill-mui{transition:rotate .2s;flex-shrink:0}
+.page .fab .goc-nut-panel{position:absolute;right:0;bottom:calc(100% + 10px);z-index:2;min-width:224px;padding:8px;border-radius:18px;background:var(--panel);border:1px solid var(--line2);box-shadow:0 22px 44px var(--shadow);display:grid;gap:2px;animation:pub-goc-len .18s cubic-bezier(.2,.8,.2,1) both}
+.page .fab .goc-nut-panel a{width:auto;height:auto;min-height:48px;padding:0 14px 0 8px;display:flex;align-items:center;justify-content:flex-start;gap:10px;border-radius:12px;box-shadow:none;color:var(--text);font-weight:600;font-size:15px;text-decoration:none;transition:background .15s}
+.page .fab .goc-nut-panel a:hover{transform:none;background:var(--panel2)}
+.page .fab .goc-nut-panel a.on{color:var(--accT);font-weight:700}
+@media (max-width:860px){.page .fab .goc-pill{min-height:40px;font-size:13px;padding-right:12px}.page .fab .goc-nut-panel{min-width:210px}}
+@media (prefers-reduced-motion: reduce){.page .nav-goc-panel,.page .fab .goc-nut-panel{animation:none!important}.page .goc-pill,.page .nav-goc-mui,.page .goc-pill-mui{transition:none!important}}
