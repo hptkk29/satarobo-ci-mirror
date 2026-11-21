@@ -1,0 +1,54 @@
+{
+  "name": "bad-response-askfields-order",
+  "description": "PHẢN HỒI KHÔNG HỢP LỆ (provider sai): askFields phải theo thứ tự cố định [phone, campus].",
+  "validates": {
+    "request": "LeadIntakeRequest",
+    "requestExpect": "VALID",
+    "response": "LeadIntakeResponse",
+    "responseExpect": "INVALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/lead-intakes",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "CONSULTATION_REQUEST:1619c4a361efe850053cb50384a26a61614a62e3:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "intent": "CONSULTATION_REQUEST",
+      "candidate": {},
+      "catalogVersion": 7,
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_zz00000000zz00",
+        "status": "NEED_INFO",
+        "nextAction": "ASK_FIELDS",
+        "askFields": [
+          "campus",
+          "phone"
+        ]
+      },
+      "meta": {
+        "requestId": "req_test00000077ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "CONSULTATION_REQUEST",
+    "seed": "m_TEST_0077",
+    "v": 1
+  }
+}

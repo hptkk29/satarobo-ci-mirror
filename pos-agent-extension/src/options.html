@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SataRobo POS Agent — Tuỳ chọn</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>SataRobo POS Agent</h1>
+        <p class="phu">
+          Đọc giao dịch thẻ SmartPOS từ merchant portal Techcombank (trong phiên người đã đăng nhập) và gửi về satarobo.
+          Không lưu mật khẩu, không gửi token.
+        </p>
+      </header>
+
+      <section id="trang-thai" aria-live="polite" aria-label="Trạng thái">
+        <h2>Trạng thái</h2>
+        <dl>
+          <div><dt>Phiên portal</dt><dd data-tt="phien">—</dd></div>
+          <div><dt>Hết hạn lúc</dt><dd data-tt="hetHan">—</dd></div>
+          <div><dt>Đồng bộ xong lần cuối</dt><dd data-tt="lastSynced">—</dd></div>
+          <div><dt>Lượt đồng bộ gần nhất</dt><dd data-tt="lanCuoi">—</dd></div>
+          <div><dt>Lỗi đang mở</dt><dd data-tt="loi">—</dd></div>
+          <div><dt>Phiên bản</dt><dd data-tt="phienBan">—</dd></div>
+        </dl>
+        <button id="kiem-tra" type="button">Kiểm tra kết nối ngay</button>
+      </section>
+
+      <form id="cau-hinh" novalidate>
+        <h2>Cấu hình</h2>
+        <p class="phu">
+          Năm ô dưới lấy ở satarobo: <b>Biến động số dư → Sức khoẻ POS Agent</b> (hộp "Chép cấu hình" hiện MỘT lần lúc tạo
+          agent / tạo lại bí mật).
+        </p>
+
+        <label for="o-agentId">Mã agent (agentId)</label>
+        <input id="o-agentId" name="agentId" autocomplete="off" spellcheck="false" />
+        <p class="loi" data-loi="agentId"></p>
+
+        <label for="o-centerCode">Mã cơ sở (chỉ để hiển thị, vd CS1)</label>
+        <input id="o-centerCode" name="centerCode" autocomplete="off" spellcheck="false" />
+        <p class="loi" data-loi="centerCode"></p>
+
+        <label for="o-merchantCode">Mã merchant portal (merchant_code)</label>
+        <input id="o-merchantCode" name="merchantCode" autocomplete="off" spellcheck="false" />
+        <p class="loi" data-loi="merchantCode"></p>
+
+        <label for="o-satAroboBaseUrl">Địa chỉ satarobo</label>
+        <select id="o-satAroboBaseUrl" name="satAroboBaseUrl"></select>
+        <p class="loi" data-loi="satAroboBaseUrl"></p>
+
+        <label for="o-agentSecret">Bí mật agent (agentSecret)</label>
+        <input id="o-agentSecret" name="agentSecret" type="password" autocomplete="new-password" spellcheck="false" />
+        <p class="goi-y">Bí mật KHÔNG bao giờ hiện lại sau khi lưu. Để trống = giữ bí mật đang có.</p>
+        <p class="loi" data-loi="agentSecret"></p>
+
+        <button type="submit">Lưu cấu hình</button>
+        <p id="thong-bao" role="status"></p>
+      </form>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

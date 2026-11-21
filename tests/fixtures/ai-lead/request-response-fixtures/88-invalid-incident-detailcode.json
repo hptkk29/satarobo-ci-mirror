@@ -1,0 +1,40 @@
+{
+  "name": "invalid-incident-detailcode",
+  "description": "detailCode ngoài danh sách đóng 16 mã bị từ chối (chống dùng mã làm kênh dữ liệu).",
+  "validates": {
+    "request": "IncidentRequest",
+    "requestExpect": "INVALID",
+    "response": "ErrorEnvelope",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/incidents",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "INCIDENT:056096039148fb48164db6629dbdd799c4ea0b8e:v1",
+      "pageId": "104500000000001",
+      "category": "OTHER",
+      "severity": "LOW",
+      "detailCode": "SDT_0905123456_DA_TON_TAI",
+      "occurredAt": "2026-10-26T14:33:00+07:00"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {},
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "PAYLOAD_INVALID",
+        "message": "Dữ liệu gửi lên không đúng hợp đồng.",
+        "requestId": "req_test00000080ab"
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "INCIDENT",
+    "seed": "x|y|z",
+    "v": 1
+  }
+}

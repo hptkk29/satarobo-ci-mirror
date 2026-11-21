@@ -1,0 +1,58 @@
+{
+  "name": "intake-campus-not-accepting",
+  "description": "Khách chọn CS3 đã ngừng nhận khách (hoặc mã không có trong catalog) ⇒ INVALID_SELECTION + refreshCatalog.",
+  "validates": {
+    "request": "LeadIntakeRequest",
+    "requestExpect": "VALID",
+    "response": "LeadIntakeResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/lead-intakes",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "CONSULTATION_REQUEST:1102f42c2e0eef1f8c9710f58eac84a5b0f8130b:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "intent": "CONSULTATION_REQUEST",
+      "candidate": {
+        "phoneRaw": "0905123456",
+        "campusCode": "CS3"
+      },
+      "evidence": {
+        "phoneMessageMid": "m_TEST_phone_0004",
+        "campusMessageMid": "m_TEST_campus_0004"
+      },
+      "catalogVersion": 7,
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_d4e5f6a1b2c3d4",
+        "status": "INVALID_SELECTION",
+        "nextAction": "RE_ASK_CAMPUS",
+        "refreshCatalog": true
+      },
+      "meta": {
+        "requestId": "req_test00000013ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "CONSULTATION_REQUEST",
+    "seed": "m_TEST_0004",
+    "v": 1
+  }
+}
