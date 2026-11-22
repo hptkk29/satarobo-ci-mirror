@@ -1,0 +1,49 @@
+{
+  "name": "handoff-already-queued",
+  "description": "Yêu cầu chuyển người ĐÃ mở từ trước (tin chờ đã gửi ở lần trước) ⇒ STAY_SILENT, KHÔNG gửi tin chờ lần hai.",
+  "validates": {
+    "request": "HandoffRequest",
+    "requestExpect": "VALID",
+    "response": "HandoffResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/handoffs",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "HANDOFF:e5dedf2f082e1c44f2adb6ea701b7395a1aeb1cf:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "reasonCode": "CUSTOMER_REQUESTED_HUMAN",
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_h3c4d5e6f1a2b3",
+        "handoffStatus": "ALREADY_QUEUED",
+        "ownerMode": "HANDOFF_REQUESTED",
+        "nextAction": "STAY_SILENT"
+      },
+      "meta": {
+        "requestId": "req_test00000022ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "HANDOFF",
+    "seed": "m_TEST_0103",
+    "v": 1
+  }
+}

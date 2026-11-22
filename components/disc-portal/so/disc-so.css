@@ -1,0 +1,74 @@
+/*
+ * TOKEN MÀU CỦA SỔ GIA ĐÌNH DISC — chỉ có hiệu lực trong cây `.disc-scope` (đặt ở app/(portal)/portal/disc/layout.tsx),
+ * nằm BÊN TRONG `.portal-v2`. Không đụng `:root`, không đụng token dùng chung của portal.
+ * Bốn nhóm D/I/S/C là màu NHẬN DIỆN của tính năng (khớp board Disc.dc.html): component chỉ tham chiếu `--disc-*`, không hex cứng.
+ * Sáng là mặc định; `.portal-v2.dark` đổi sang bộ màu tối (đủ tương phản trên nền #1a1822).
+ */
+.disc-scope {
+  --disc-d: #c2410c;
+  --disc-d-nen: #fde7da;
+  --disc-d-chu: #ffffff;
+  --disc-i: #fe8f2d;
+  --disc-i-nen: #ffe3c4;
+  --disc-i-chu: #241133;
+  --disc-s: #1d7a46;
+  --disc-s-nen: #e3f3ea;
+  --disc-s-chu: #ffffff;
+  --disc-c: #620c8b;
+  --disc-c-nen: #f3eaf8;
+  --disc-c-chu: #ffffff;
+  /* mức va chạm của cặp */
+  --disc-cao: #e0565b;
+  --disc-cao-nen: #fdf1f1;
+  --disc-cao-chu: #a3262a;
+  --disc-tb: #fe8f2d;
+  --disc-tb-nen: #fff3e6;
+  --disc-tb-chu: #a5561a;
+  --disc-thap: #1d7a46;
+  --disc-thap-nen: #e3f3ea;
+  --disc-thap-chu: #1d7a46;
+  /* nền bốn góc phần tư của bản đồ + đường kẻ */
+  --disc-luoi: #c9b3d9;
+  --disc-nen-ban-do-d: rgba(253, 231, 218, 0.6);
+  --disc-nen-ban-do-i: rgba(255, 227, 196, 0.6);
+  --disc-nen-ban-do-s: rgba(227, 243, 234, 0.7);
+  --disc-nen-ban-do-c: rgba(243, 234, 248, 0.8);
+  --disc-net-vien: #241133;
+}
+
+.portal-v2.dark .disc-scope {
+  --disc-d: #ff8a5c;
+  --disc-d-nen: #3b2119;
+  --disc-d-chu: #1a0d08;
+  --disc-i: #ffa24d;
+  --disc-i-nen: #3a2a17;
+  --disc-i-chu: #1f1305;
+  --disc-s: #6fdb9b;
+  --disc-s-nen: #14301f;
+  --disc-s-chu: #05200f;
+  --disc-c: #c28bf2;
+  --disc-c-nen: #2a2339;
+  --disc-c-chu: #1a0d27;
+  --disc-cao: #ff8f80;
+  --disc-cao-nen: #321a1d;
+  --disc-cao-chu: #ffb0a5;
+  --disc-tb: #ffa24d;
+  --disc-tb-nen: #3a2a17;
+  --disc-tb-chu: #ffa24d;
+  --disc-thap: #6fdb9b;
+  --disc-thap-nen: #14301f;
+  --disc-thap-chu: #6fdb9b;
+  --disc-luoi: #5d5373;
+  --disc-nen-ban-do-d: rgba(255, 138, 92, 0.12);
+  --disc-nen-ban-do-i: rgba(255, 162, 77, 0.12);
+  --disc-nen-ban-do-s: rgba(111, 219, 155, 0.12);
+  --disc-nen-ban-do-c: rgba(194, 139, 242, 0.14);
+  --disc-net-vien: #f4f0fa;
+}
+
+.disc-scope .disc-cuon-ngang::-webkit-scrollbar {
+  display: none;
+}
+.disc-scope .disc-cuon-ngang {
+  scrollbar-width: none;
+}

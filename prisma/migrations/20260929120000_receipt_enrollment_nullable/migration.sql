@@ -1,0 +1,12 @@
+-- Phiếu thu của đơn KIT / THI (Order.type PRODUCT · EXAM) — không có ghi danh (29/09/2026).
+--
+-- Trước bản này `Receipt.enrollmentId` NOT NULL ⇒ `issueReceipt` không cấp được phiếu cho khoản
+-- không gắn ghi danh, nên `confirmPayment` / bước chốt hoá đơn TỪ CHỐI mọi khoản của đơn kit/thi:
+-- tiền đã về mà khoản chờ mãi. Chủ dự án chốt 29/09: khoản của đơn PRODUCT/EXAM xác nhận được KHÔNG
+-- cần ghi danh; đơn COURSE vẫn giữ cổng "phải có ghi danh" (luật ở `lib/finance/can-ghi-danh.ts`).
+--
+-- CHỈ NỚI RÀNG BUỘC: không đổi dữ liệu, không đổi kiểu cột, khoá ngoại
+-- `Receipt_enrollmentId_fkey` (ON DELETE RESTRICT) và chỉ mục `Receipt_enrollmentId_idx` giữ nguyên.
+-- Dòng cũ đều có giá trị ⇒ không dòng nào đổi nghĩa. Bảng có dữ liệu PROD — người vận hành xem trước
+-- khi lên `main` (luật cứng #4).
+ALTER TABLE "Receipt" ALTER COLUMN "enrollmentId" DROP NOT NULL;

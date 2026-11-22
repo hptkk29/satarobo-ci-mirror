@@ -1,0 +1,21 @@
+{
+  "name": "Sata Robo — Quản trị",
+  "short_name": "Sata Robo",
+  "description": "Công cụ vận hành nội bộ Sata Robo. Cài lên màn hình chính để nhận thông báo lead mới.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#f97316",
+  "lang": "vi",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/icons/satarobo-500.png",
+      "sizes": "500x500",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

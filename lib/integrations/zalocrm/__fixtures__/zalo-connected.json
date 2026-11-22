@@ -1,0 +1,8 @@
+{
+  "event": "zalo.connected",
+  "orgCode": "cs1",
+  "timestamp": "2026-09-06T01:00:00.000Z",
+  "data": {
+    "accountId": "zc-acc-01"
+  }
+}
