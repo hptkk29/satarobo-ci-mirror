@@ -1,0 +1,49 @@
+{
+  "name": "handoff-already-human-owned",
+  "description": "Nhân viên đã nhận hội thoại ⇒ Agent PHẢI im lặng.",
+  "validates": {
+    "request": "HandoffRequest",
+    "requestExpect": "VALID",
+    "response": "HandoffResponse",
+    "responseExpect": "VALID"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/ai-lead-agent/v1/handoffs",
+    "body": {
+      "schemaVersion": "1.0",
+      "idempotencyKey": "HANDOFF:4d11415ab597fda2d8f0e3432399514417783b5a:v1",
+      "conversation": {
+        "pageId": "104500000000001",
+        "psid": "7000000000000001",
+        "fbName": "Phụ huynh Minh Anh",
+        "fbNameSource": "META_PROFILE_API",
+        "inboxThreadId": "t_10152000000000001"
+      },
+      "reasonCode": "AI_UNCERTAIN",
+      "testRunId": "synthetic-0001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "ok": true,
+      "data": {
+        "receiptId": "rct_h2b3c4d5e6f1a2",
+        "handoffStatus": "ALREADY_HUMAN_OWNED",
+        "ownerMode": "HUMAN_ACTIVE",
+        "nextAction": "STAY_SILENT"
+      },
+      "meta": {
+        "requestId": "req_test00000021ab",
+        "serverTime": 1793000000000
+      }
+    }
+  },
+  "idempotency": {
+    "kind": "HANDOFF",
+    "seed": "m_TEST_0102",
+    "v": 1
+  }
+}

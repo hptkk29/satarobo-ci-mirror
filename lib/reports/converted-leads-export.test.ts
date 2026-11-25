@@ -1,0 +1,424 @@
+// C-04 — xuất Excel bảng C-03 ("Lead đã chuyển đổi").
+//
+// Tệp Excel ra khỏi hệ thống là KHÔNG THU HỒI ĐƯỢC, nên bộ test này canh đúng những
+// thứ chỉ lộ ra sau khi file đã nằm trong máy người khác:
+//
+//  1. Tên phụ huynh / học sinh trong file phải là bản ĐÃ CHE khi người xuất không có
+//     `leads:view-pii`. Che ở màn hình mà quên che ở file là rò nguyên danh sách khách.
+//  2. Không có `payments:view` thì hai ô tiền phải nói RÕ "ẩn vì thiếu quyền" — tuyệt
+//     đối không để trống và không ghi 0. Một cột tiền trống trong Excel bị đọc thành
+//     "doanh thu 0", rồi con số đó đi vào báo cáo gửi lên trên.
+//  3. Bộ cột CỐ ĐỊNH (quyết định kỹ thuật 24/08/2026, OQ-G12): hai người xuất cùng một
+//     bộ lọc phải ra file cùng cấu trúc, kể cả khi quyền xem tiền của họ khác nhau —
+//     nếu không thì mọi công thức Excel dựng sẵn trên file này gãy.
+//  4. Khối đối soát ba mảnh phải theo file. Bỏ nó là Σ cột tiền của file THẤP HƠN doanh
+//     thu kỳ ở tab Tài chính, và người cầm file không có gì để hiểu vì sao.
+//  5. Danh sách bị cắt ở trần quét phải được NÓI RA trong chính file, không chỉ trên màn.
+import { describe, it, expect } from "vitest";
+import {
+  buildConvertedLeadRows,
+  reconcileConvertedRevenue,
+  type ConvertedLeadChildInput,
+  type ConvertedLeadReport,
+} from "./converted-leads";
+import {
+  CONVERTED_LEAD_EXPORT_COLUMNS,
+  CONVERTED_LEAD_EXPORT_MONEY_COL,
+  CONVERTED_LEAD_EXPORT_SHARE_COL,
+  O_TIEN_AN,
+  buildConvertedLeadExportSheet,
+  buildConvertedLeadExportInfoSheet,
+  convertedLeadExportFileName,
+} from "./converted-leads-export";
+
+const D = (s: string) => new Date(s);
+
+let seq = 0;
+function con(over: Partial<ConvertedLeadChildInput> = {}): ConvertedLeadChildInput {
+  seq += 1;
+  return {
+    leadChildId: `c${seq}`,
+    leadId: `lead-${seq}`,
+    childName: "Nguyễn Văn An",
+    parentName: "Nguyễn Thị Lan",
+    courseName: "Lập trình Robot",
+    centerId: "cs1",
+    assignedToName: "Trần Sale",
+    enteredAt: D("2026-08-01T03:00:00.000Z"),
+    closedAt: D("2026-08-11T03:00:00.000Z"),
+    ...over,
+  };
+}
+
+const TEN_CO_SO = new Map([
+  ["cs1", "CS1 — 211 Nguyễn Hữu Thọ"],
+  ["cs2", "CS2 — 114 Hoàng Diệu"],
+]);
+
+/** Dựng một `ConvertedLeadReport` như `getConvertedLeadRows` trả về. */
+function baoCao(args: {
+  children: ConvertedLeadChildInput[];
+  revenueByChild?: Map<string, number> | null;
+  totalRevenue?: number;
+  unassignedRevenue?: number;
+  canViewPii?: boolean;
+  truncated?: boolean;
+  revenueTruncated?: boolean;
+}): ConvertedLeadReport {
+  const coTien = args.revenueByChild !== null && args.revenueByChild !== undefined;
+  const rows = buildConvertedLeadRows({
+    children: args.children,
+    revenueByChild: coTien ? args.revenueByChild! : null,
+    totalRevenue: args.totalRevenue ?? 0,
+    canViewPii: args.canViewPii ?? true,
+  });
+  return {
+    rows,
+    truncated: args.truncated ?? false,
+    invalidDurationCount: rows.filter((r) => r.daysToClose === null).length,
+    revenue: coTien
+      ? {
+          ...reconcileConvertedRevenue({
+            rows,
+            totalRevenue: args.totalRevenue ?? 0,
+            unassignedRevenue: args.unassignedRevenue ?? 0,
+          }),
+          truncated: args.revenueTruncated ?? false,
+        }
+      : null,
+  };
+}
+
+function sheet(bc: ConvertedLeadReport) {
+  return buildConvertedLeadExportSheet({
+    report: bc,
+    centerNameById: TEN_CO_SO,
+    leadUrlBase: "https://admin.satarobo.vn/leads",
+  });
+}
+
+/** Toàn bộ ô của sheet, ép về chuỗi — để tìm chuỗi nhạy cảm lọt ra file. */
+function moiO(rows: (string | number)[][]): string {
+  return rows.map((r) => r.map((c) => String(c)).join("\u0000")).join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. PII — thứ nguy hiểm nhất
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("[C-04] che PII — file tải về phải là bản đã che", () => {
+  it("không có quyền xem PII ⇒ tên PH và tên HS trong file là bản ĐÃ CHE", () => {
+    const rows = sheet(
+      baoCao({
+        children: [con({ parentName: "Nguyễn Thị Lan", childName: "Nguyễn Văn An" })],
+        canViewPii: false,
+      }),
+    );
+    const text = moiO(rows);
+    expect(text).not.toContain("Nguyễn Thị Lan");
+    expect(text).not.toContain("Nguyễn Văn An");
+    // Bản che của `maskPersonName`: giữ họ, viết tắt phần còn lại.
+    expect(text).toContain("Nguyễn T. L.");
+    expect(text).toContain("Nguyễn V. A.");
+  });
+
+  it("có quyền xem PII ⇒ tên hiện nguyên văn", () => {
+    const rows = sheet(
+      baoCao({
+        children: [con({ parentName: "Nguyễn Thị Lan", childName: "Nguyễn Văn An" })],
+        canViewPii: true,
+      }),
+    );
+    const text = moiO(rows);
+    expect(text).toContain("Nguyễn Thị Lan");
+    expect(text).toContain("Nguyễn Văn An");
+  });
+
+  it("sheet thông tin ghi rõ file đang ở trạng thái CHE hay không — người nhận file phải biết", () => {
+    const bc = baoCao({ children: [con()], canViewPii: false });
+    const che = moiO(
+      buildConvertedLeadExportInfoSheet({
+        report: bc,
+        dateFromStr: "2026-08-01",
+        dateToStr: "2026-08-26",
+        centerNames: ["CS1"],
+        isAllCenters: true,
+        canViewPii: false,
+        watermark: "wm",
+      }),
+    );
+    expect(che).toContain("ĐÃ CHE");
+
+    const khongChe = moiO(
+      buildConvertedLeadExportInfoSheet({
+        report: baoCao({ children: [con()], canViewPii: true }),
+        dateFromStr: "2026-08-01",
+        dateToStr: "2026-08-26",
+        centerNames: ["CS1"],
+        isAllCenters: true,
+        canViewPii: true,
+        watermark: "wm",
+      }),
+    );
+    expect(khongChe).not.toContain("ĐÃ CHE");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. Bộ cột CỐ ĐỊNH + cột tiền khi thiếu quyền
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("[C-04] bộ cột cố định (OQ-G12)", () => {
+  it("dòng đầu LUÔN là đúng bộ cột đã khai, không phụ thuộc quyền xem tiền", () => {
+    const coTien = sheet(
+      baoCao({ children: [con({ leadChildId: "c1" })], revenueByChild: new Map([["c1", 1]]), totalRevenue: 1 }),
+    );
+    const khongTien = sheet(baoCao({ children: [con()], revenueByChild: null }));
+
+    expect(coTien[0]).toEqual([...CONVERTED_LEAD_EXPORT_COLUMNS]);
+    expect(khongTien[0]).toEqual([...CONVERTED_LEAD_EXPORT_COLUMNS]);
+  });
+
+  it("mọi dòng dữ liệu có đúng số ô bằng số cột — file lệch cột là file không mở công thức được", () => {
+    const bc = baoCao({
+      children: [con({ leadChildId: "c1" }), con({ leadChildId: "c2" })],
+      revenueByChild: new Map([["c1", 1_000]]),
+      totalRevenue: 1_000,
+    });
+    const rows = sheet(bc);
+    // 1 header + 2 dòng học sinh (khối đối soát ở cuối được phép ngắn hơn).
+    for (const r of rows.slice(0, 3)) {
+      expect(r).toHaveLength(CONVERTED_LEAD_EXPORT_COLUMNS.length);
+    }
+  });
+});
+
+describe("[C-04] cột tiền khi người xuất KHÔNG có quyền xem thanh toán", () => {
+  it("hai ô tiền nói rõ 'ẩn vì thiếu quyền' — không để trống, không ghi 0", () => {
+    const rows = sheet(baoCao({ children: [con()], revenueByChild: null }));
+    const dong = rows[1]!;
+    expect(dong[CONVERTED_LEAD_EXPORT_MONEY_COL]).toBe(O_TIEN_AN);
+    expect(dong[CONVERTED_LEAD_EXPORT_SHARE_COL]).toBe(O_TIEN_AN);
+    // Không được có số 0 nào ở hai ô đó — 0 đọc thành "đã thu 0 đồng".
+    expect(dong[CONVERTED_LEAD_EXPORT_MONEY_COL]).not.toBe(0);
+    expect(dong[CONVERTED_LEAD_EXPORT_MONEY_COL]).not.toBe("");
+  });
+
+  it("không có quyền xem tiền ⇒ KHÔNG có khối đối soát doanh thu (không có gì để đối soát)", () => {
+    const text = moiO(sheet(baoCao({ children: [con()], revenueByChild: null })));
+    expect(text).not.toContain("Tổng thực thu của kỳ");
+    expect(text).not.toContain("Chưa quy được về học sinh");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. Giá trị từng dòng
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("[C-04] ô tiền của từng dòng", () => {
+  it("có thực thu ⇒ ghi SỐ (không phải chuỗi đã format) để Excel cộng được", () => {
+    const rows = sheet(
+      baoCao({
+        children: [con({ leadChildId: "c1" })],
+        revenueByChild: new Map([["c1", 3_000_000]]),
+        totalRevenue: 10_000_000,
+      }),
+    );
+    expect(rows[1]![CONVERTED_LEAD_EXPORT_MONEY_COL]).toBe(3_000_000);
+    expect(typeof rows[1]![CONVERTED_LEAD_EXPORT_MONEY_COL]).toBe("number");
+  });
+
+  it("chốt trong kỳ nhưng tiền về kỳ sau ⇒ ô TRỐNG, KHÔNG ghi số 0", () => {
+    // Ghi 0 là khẳng định "đã thu 0 đồng"; sự thật là "khoản của em này rơi ngoài kỳ
+    // đang lọc". Ô trống vẫn cho SUM() ra đúng vì Excel bỏ qua ô trống.
+    const rows = sheet(
+      baoCao({
+        children: [con({ leadChildId: "cX" })],
+        revenueByChild: new Map(),
+        totalRevenue: 10_000_000,
+      }),
+    );
+    expect(rows[1]![CONVERTED_LEAD_EXPORT_MONEY_COL]).toBe("");
+  });
+
+  it("% trên tổng doanh thu giữ đúng cách hiển thị của màn hình", () => {
+    const rows = sheet(
+      baoCao({
+        children: [con({ leadChildId: "c1" })],
+        revenueByChild: new Map([["c1", 2_500_000]]),
+        totalRevenue: 10_000_000,
+      }),
+    );
+    expect(rows[1]![CONVERTED_LEAD_EXPORT_SHARE_COL]).toBe("25,0%");
+  });
+
+  it("chốt TRƯỚC ngày vào hệ thống ⇒ ô thời gian chốt là ghi chú, không phải số âm", () => {
+    const rows = sheet(
+      baoCao({
+        children: [
+          con({ enteredAt: D("2026-08-20T03:00:00.000Z"), closedAt: D("2026-08-11T03:00:00.000Z") }),
+        ],
+        revenueByChild: null,
+      }),
+    );
+    const o = String(rows[1]![CONVERTED_LEAD_EXPORT_COLUMNS.indexOf("Thời gian chốt")]);
+    expect(o).toContain("chốt trước ngày vào hệ thống");
+    expect(o).not.toContain("-");
+  });
+
+  it("cơ sở chưa gán hiện đúng chữ, không hiện mã cơ sở trống", () => {
+    const rows = sheet(baoCao({ children: [con({ centerId: null })], revenueByChild: null }));
+    expect(moiO(rows)).toContain("Chưa gán cơ sở");
+  });
+
+  it("đường dẫn phiếu dựng từ leadId để người cầm file lần ngược về được", () => {
+    const rows = sheet(baoCao({ children: [con({ leadId: "lead-abc" })], revenueByChild: null }));
+    expect(moiO(rows)).toContain("https://admin.satarobo.vn/leads/lead-abc");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. Khối đối soát — chống "tổng file thấp hơn tab Tài chính"
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("[C-04] khối đối soát đi theo file", () => {
+  const bc = baoCao({
+    children: [con({ leadChildId: "c1" }), con({ leadChildId: "c2" })],
+    revenueByChild: new Map([
+      ["c1", 3_000_000],
+      ["c2", 1_000_000],
+    ]),
+    totalRevenue: 10_000_000,
+    unassignedRevenue: 2_000_000,
+  });
+
+  it("đủ BỐN dòng đối soát, trong đó dòng 'chưa quy được về học sinh' là bắt buộc", () => {
+    const text = moiO(sheet(bc));
+    expect(text).toContain("Thực thu của các học sinh trong bảng");
+    expect(text).toContain("Học sinh chốt ở kỳ khác");
+    expect(text).toContain("Chưa quy được về học sinh");
+    expect(text).toContain("Tổng thực thu của kỳ");
+  });
+
+  it("ba mảnh cộng lại ĐÚNG BẰNG tổng thực thu của kỳ", () => {
+    const rows = sheet(bc);
+    const so = (nhan: string) => {
+      const r = rows.find((x) => String(x[0]).startsWith(nhan));
+      return Number(r![CONVERTED_LEAD_EXPORT_MONEY_COL]);
+    };
+    const tong = so("Tổng thực thu của kỳ");
+    expect(so("Thực thu của các học sinh trong bảng") + so("Học sinh chốt ở kỳ khác") + so("Chưa quy được về học sinh")).toBe(tong);
+    expect(tong).toBe(10_000_000);
+  });
+
+  it("khối đối soát tự nói nó KHÔNG phải dòng học sinh — chống cộng nhầm vào danh sách", () => {
+    expect(moiO(sheet(bc))).toContain("không phải dòng học sinh");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Cảnh báo phải nằm TRONG file
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("[C-04] cảnh báo đi theo file, không chỉ ở trên màn", () => {
+  it("danh sách bị cắt ở trần quét ⇒ nói ra ở CẢ sheet dữ liệu lẫn sheet thông tin", () => {
+    const bc = baoCao({ children: [con()], revenueByChild: null, truncated: true });
+    expect(moiO(sheet(bc))).toContain("BỊ CẮT");
+    expect(
+      moiO(
+        buildConvertedLeadExportInfoSheet({
+          report: bc,
+          dateFromStr: "2026-08-01",
+          dateToStr: "2026-08-26",
+          centerNames: ["CS1"],
+          isAllCenters: true,
+          canViewPii: true,
+          watermark: "wm",
+        }),
+      ),
+    ).toContain("BỊ CẮT");
+  });
+
+  it("không bị cắt ⇒ KHÔNG có cảnh báo cắt (cảnh báo thừa làm người ta bỏ qua cảnh báo thật)", () => {
+    const bc = baoCao({ children: [con()], revenueByChild: null });
+    expect(moiO(sheet(bc))).not.toContain("BỊ CẮT");
+  });
+
+  it("có học sinh chốt trước ngày vào hệ thống ⇒ đếm riêng trong sheet thông tin", () => {
+    const bc = baoCao({
+      children: [
+        con({ enteredAt: D("2026-08-20T03:00:00.000Z"), closedAt: D("2026-08-11T03:00:00.000Z") }),
+      ],
+      revenueByChild: null,
+    });
+    expect(
+      moiO(
+        buildConvertedLeadExportInfoSheet({
+          report: bc,
+          dateFromStr: "2026-08-01",
+          dateToStr: "2026-08-26",
+          centerNames: ["CS1"],
+          isAllCenters: true,
+          canViewPii: true,
+          watermark: "wm",
+        }),
+      ),
+    ).toContain("chốt trước thời điểm vào hệ thống");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Sheet thông tin — truy vết được lượt xuất
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("[C-04] sheet thông tin xuất", () => {
+  const bc = baoCao({
+    children: [con({ leadChildId: "c1" }), con({ leadChildId: "c2" })],
+    revenueByChild: new Map([["c1", 1_000_000]]),
+    totalRevenue: 4_000_000,
+    unassignedRevenue: 500_000,
+  });
+  const info = buildConvertedLeadExportInfoSheet({
+    report: bc,
+    dateFromStr: "2026-08-01",
+    dateToStr: "2026-08-26",
+    centerNames: ["CS1 — 211 Nguyễn Hữu Thọ", "CS2 — 114 Hoàng Diệu"],
+    isAllCenters: false,
+    canViewPii: true,
+    watermark: "Xuất bởi Chị Hà (u1) lúc 2026-08-26T02:00:00.000Z — 2 dòng",
+  });
+  const text = moiO(info);
+
+  it("ghi lại BỘ LỌC đang áp dụng — file không có bộ lọc là file không đối chiếu được", () => {
+    expect(text).toContain("01/08/2026");
+    expect(text).toContain("26/08/2026");
+    expect(text).toContain("CS1 — 211 Nguyễn Hữu Thọ");
+    expect(text).toContain("CS2 — 114 Hoàng Diệu");
+  });
+
+  it("nói rõ khoảng ngày lọc theo THỜI ĐIỂM CHỐT (không phải ngày tiền về)", () => {
+    expect(text).toContain("thời điểm chốt");
+  });
+
+  it("ghi số dòng học sinh của file", () => {
+    const dong = info.find((r) => String(r[0]).includes("Số dòng học sinh"));
+    expect(dong?.[1]).toBe(2);
+  });
+
+  it("mang theo watermark truy vết ai xuất / lúc nào", () => {
+    expect(text).toContain("Xuất bởi Chị Hà (u1)");
+  });
+
+  it("chọn tay từng cơ sở ⇒ ghi đúng là chọn tay, không ghi 'tất cả'", () => {
+    expect(text).not.toContain("Tất cả cơ sở");
+  });
+});
+
+describe("[C-04] tên tệp", () => {
+  it("mang khoảng ngày để hai lần xuất khác kỳ không đè lên nhau trong thư mục Tải về", () => {
+    const ten = convertedLeadExportFileName("2026-08-01", "2026-08-26");
+    expect(ten).toContain("2026-08-01");
+    expect(ten).toContain("2026-08-26");
+    expect(ten.endsWith(".xlsx")).toBe(true);
+  });
+});

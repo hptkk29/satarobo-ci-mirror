@@ -1,0 +1,14 @@
+-- Lớp trải nghiệm THEO KHUNG (mô hình case, từ 22/09/2026) hay lớp slot CŨ.
+--
+-- VÌ SAO KHÔNG SUY TỪ startTime/endTime (sự cố đo được 23/09/2026): hai cột đó NOT NULL từ
+-- 20260615150000_add_trial_class_v2 tới 20260828100000_trial_lop_bo_gio_si_so, và migration
+-- 28/08 chỉ DROP NOT NULL — KHÔNG xoá giá trị. Mọi lớp tạo trước 28/08 vì thế VẪN mang
+-- khung giờ. Suy "có giờ ⇒ theo khung" là xếp nhầm các lớp slot cũ đó, và bé NULL ("học cả
+-- lớp", chốt 28/08) của chúng bị đổi nghĩa thành "chưa xếp case" ở mọi màn: biến khỏi bảng
+-- giáo viên, không được nhắc, không điểm danh được. Đo được trên lớp UAT dựng "giống PROD"
+-- (uat-lopthu-CS1-1: ngày 11/08, 14:00–19:00, 12 ghi danh NULL).
+--
+-- ADDITIVE, mặc định FALSE: mọi lớp đang có trên PROD giữ nguyên nghĩa cũ, không backfill.
+-- Chỉ `createTrialClass` ghi TRUE, khi được truyền đủ ngày + khung (ba đường mở lớp mới).
+-- Postgres ≥11 thêm cột có DEFAULT hằng mà không viết lại bảng.
+ALTER TABLE "TrialClassV2" ADD COLUMN "theoKhung" BOOLEAN NOT NULL DEFAULT false;
