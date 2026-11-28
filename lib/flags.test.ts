@@ -1,0 +1,271 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  isAuthPhoneProvisioningEnabled,
+  isZalocrmEnabled,
+  isInboxEnabled,
+  isAiLeadGatewayEnabled,
+  isElearningEvalLinkEnabled,
+  isElearningVideoEnabled,
+  isElearningFlagAutoEnabled,
+  isElearningDynamicAssignEnabled,
+  isElearningReminderEnabled,
+  isElearningExamAutoCloseEnabled,
+} from "./flags";
+
+/** `.env.example` đọc MỘT lần — nhiều bộ dưới đây soi nó. */
+const ENV_EXAMPLE = readFileSync(join(process.cwd(), ".env.example"), "utf8");
+
+// AUTH-SĐT P5 — cờ ngắt đường TỰ ĐỘNG cấp tài khoản phụ huynh theo SĐT.
+// Doc phase đã từng ghi cờ `AUTH_PHONE_PROVISIONING` ở hàng "Feature flag" và ở
+// mục Rollback của P5 trong khi **không có dòng code nào đọc nó** — đường lùi chỉ
+// tồn tại trên giấy. Bộ test này khoá đúng ngữ nghĩa để không tái diễn.
+
+const KEY = "AUTH_PHONE_PROVISIONING";
+
+afterEach(() => {
+  delete process.env[KEY];
+});
+
+describe("isAuthPhoneProvisioningEnabled", () => {
+  it("mặc định BẬT khi không khai env — merge P5 không đổi hành vi", () => {
+    delete process.env[KEY];
+    expect(isAuthPhoneProvisioningEnabled()).toBe(true);
+  });
+
+  it('CHỈ đúng chuỗi "false" mới ngắt', () => {
+    process.env[KEY] = "false";
+    expect(isAuthPhoneProvisioningEnabled()).toBe(false);
+  });
+
+  it("bật với các giá trị khẳng định thông thường", () => {
+    for (const v of ["true", "1", "yes", "on"]) {
+      process.env[KEY] = v;
+      expect(isAuthPhoneProvisioningEnabled(), `giá trị ${v}`).toBe(true);
+    }
+  });
+
+  it('KHÔNG ngắt vì "False"/"FALSE"/" false " — tránh tưởng đã tắt mà thật ra vẫn chạy', () => {
+    // Nhất quán với các cờ khác trong lib/flags.ts (so khớp đúng-bằng, không
+    // normalize). Ghi thành test để người kéo cờ lúc sự cố biết phải gõ chính xác:
+    // gõ hoa một chữ là đường tự động VẪN chạy mà không báo gì.
+    for (const v of ["False", "FALSE", " false "]) {
+      process.env[KEY] = v;
+      expect(isAuthPhoneProvisioningEnabled(), `giá trị ${JSON.stringify(v)}`).toBe(true);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cờ `SALE_SITE_ENABLED` — GỠ 22/09/2026 cùng site Sale.
+//
+// Bộ test cũ khoá hai thứ: cờ phải có mặt trong `.env.example`, và chỉ đúng chuỗi
+// "true" mới bật. Cả hai mất nghĩa khi không còn cờ. Host `sale.satarobo.vn` nay
+// luôn 307 về biểu mẫu nhập khách của admin — ràng buộc đó khoá ở
+// `lib/auth/route-policy.test.ts`, không phải ở đây.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ZaloCRM (đợt tích hợp 06/09/2026) — hai cờ 2-phase: `ZALOCRM_ENABLED` (S1) và
+// `INBOX_ENABLED` (S9-B4).
+//
+// Vì sao khoá ngữ nghĩa bằng test chứ không tin JSDoc: `lib/settings/registry.ts`
+// đã nhắc tới `INBOX_ENABLED` "trong lib/flags.ts" suốt từ đợt hộp thư trong khi
+// KHÔNG có dòng code nào đọc nó — y hệt vết `AUTH_PHONE_PROVISIONING` (đường lùi
+// chỉ tồn tại trên giấy). Bộ test này bắt cả hai điều kiện: hàm CÓ THẬT, và
+// `.env.example` CÓ khai để người dựng môi trường mới nhìn thấy.
+// ─────────────────────────────────────────────────────────────────────────────
+const ZALOCRM_KEY = "ZALOCRM_ENABLED";
+const INBOX_KEY = "INBOX_ENABLED";
+
+describe("isZalocrmEnabled", () => {
+  afterEach(() => {
+    delete process.env[ZALOCRM_KEY];
+  });
+
+  it("`.env.example` có khai cờ — người dựng môi trường mới nhìn thấy nó", () => {
+    expect(
+      new RegExp(`^${ZALOCRM_KEY}=`, "m").test(ENV_EXAMPLE),
+      "thiếu dòng ZALOCRM_ENABLED trong .env.example",
+    ).toBe(true);
+  });
+
+  it("mặc định OFF khi env vắng — merge lô nền không mở gì cho người dùng", () => {
+    delete process.env[ZALOCRM_KEY];
+    expect(isZalocrmEnabled()).toBe(false);
+  });
+
+  it('chỉ chuỗi "true" mới bật — "True"/"1"/"yes" vẫn OFF', () => {
+    process.env[ZALOCRM_KEY] = "true";
+    expect(isZalocrmEnabled()).toBe(true);
+    for (const v of ["True", "TRUE", "1", "yes", "on", " true ", "", "false"]) {
+      process.env[ZALOCRM_KEY] = v;
+      expect(isZalocrmEnabled(), `giá trị ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+});
+
+describe("isInboxEnabled", () => {
+  afterEach(() => {
+    delete process.env[INBOX_KEY];
+  });
+
+  it("`.env.example` có khai cờ — hết cảnh cờ chỉ tồn tại trong chú thích", () => {
+    expect(
+      new RegExp(`^${INBOX_KEY}=`, "m").test(ENV_EXAMPLE),
+      "thiếu dòng INBOX_ENABLED trong .env.example",
+    ).toBe(true);
+  });
+
+  it("mặc định OFF khi env vắng", () => {
+    delete process.env[INBOX_KEY];
+    expect(isInboxEnabled()).toBe(false);
+  });
+
+  it('isInboxEnabled cùng khuôn === "true" — gõ gần đúng là VẪN TẮT', () => {
+    process.env[INBOX_KEY] = "true";
+    expect(isInboxEnabled()).toBe(true);
+    for (const v of ["True", "TRUE", "1", "yes", "on", " true ", "", "false"]) {
+      process.env[INBOX_KEY] = v;
+      expect(isInboxEnabled(), `giá trị ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+});
+
+// EL-21 — cờ RIÊNG của màn "Mức gắn đánh giá" (đặc tả v1.4 §4.8, dòng 3662/3710).
+// Màn này quyết định kết quả học có ảnh hưởng LƯƠNG hay không ⇒ mặc định OFF, và OFF
+// phải nghĩa là ẨN MÀN + CHẶN ACTION. Chưa tách cờ riêng thì bật `ELEARNING_ENABLED`
+// là mở luôn màn này cho mọi người có `program:manage`.
+const EVAL_LINK_KEY = "ELEARNING_EVAL_LINK_ENABLED";
+
+describe("isElearningEvalLinkEnabled", () => {
+  afterEach(() => {
+    delete process.env[EVAL_LINK_KEY];
+  });
+
+  it("`.env.example` có khai cờ — người dựng môi trường mới nhìn thấy nó", () => {
+    expect(
+      new RegExp(`^${EVAL_LINK_KEY}=`, "m").test(ENV_EXAMPLE),
+      "thiếu dòng ELEARNING_EVAL_LINK_ENABLED trong .env.example",
+    ).toBe(true);
+  });
+
+  it("mặc định OFF khi env vắng", () => {
+    delete process.env[EVAL_LINK_KEY];
+    expect(isElearningEvalLinkEnabled()).toBe(false);
+  });
+
+  it('chỉ chuỗi "true" mới bật — "True"/"1"/"yes" vẫn OFF', () => {
+    process.env[EVAL_LINK_KEY] = "true";
+    expect(isElearningEvalLinkEnabled()).toBe(true);
+    for (const v of ["True", "TRUE", "1", "yes", "on", " true ", "", "false"]) {
+      process.env[EVAL_LINK_KEY] = v;
+      expect(isElearningEvalLinkEnabled(), `giá trị ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+
+  it("độc lập với ELEARNING_ENABLED — bật cờ chung KHÔNG kéo theo cờ này", () => {
+    process.env.ELEARNING_ENABLED = "true";
+    try {
+      expect(isElearningEvalLinkEnabled()).toBe(false);
+    } finally {
+      delete process.env.ELEARNING_ENABLED;
+    }
+  });
+});
+
+// E-learning — bốn cờ riêng còn lại của đặc tả v1.4 §4.8 (dòng 2924-2938; EL-05 mục 7; EL-06 mục 7).
+// Cùng khuôn `=== "true"`, mặc định OFF, ĐỘC LẬP với `ELEARNING_ENABLED` và với nhau: bật site không
+// được kéo theo đo xem video, gắn cờ nghi ngờ TỰ ĐỘNG, tập người học động hay nhắc tự động.
+const CO_ELEARNING = [
+  ["ELEARNING_VIDEO_ENABLED", isElearningVideoEnabled],
+  ["ELEARNING_FLAG_AUTO", isElearningFlagAutoEnabled],
+  ["ELEARNING_DYNAMIC_ASSIGN_ENABLED", isElearningDynamicAssignEnabled],
+  ["ELEARNING_REMINDER_ENABLED", isElearningReminderEnabled],
+  ["ELEARNING_EXAM_AUTO_CLOSE_ENABLED", isElearningExamAutoCloseEnabled],
+] as const;
+
+for (const [khoa, ham] of CO_ELEARNING) {
+  describe(`cờ ${khoa}`, () => {
+    afterEach(() => {
+      delete process.env[khoa];
+      delete process.env.ELEARNING_ENABLED;
+    });
+
+    it("`.env.example` có khai cờ — người dựng môi trường mới nhìn thấy nó", () => {
+      expect(
+        new RegExp(`^${khoa}=`, "m").test(ENV_EXAMPLE),
+        `thiếu dòng ${khoa} trong .env.example`,
+      ).toBe(true);
+    });
+
+    it("mặc định OFF khi env vắng", () => {
+      delete process.env[khoa];
+      expect(ham()).toBe(false);
+    });
+
+    it('chỉ chuỗi "true" mới bật — "True"/"1"/"yes" vẫn OFF', () => {
+      process.env[khoa] = "true";
+      expect(ham()).toBe(true);
+      for (const v of ["True", "TRUE", "1", "yes", "on", " true ", "", "false"]) {
+        process.env[khoa] = v;
+        expect(ham(), `giá trị ${JSON.stringify(v)}`).toBe(false);
+      }
+    });
+
+    it("độc lập với ELEARNING_ENABLED — bật cờ chung KHÔNG kéo theo cờ này", () => {
+      process.env.ELEARNING_ENABLED = "true";
+      expect(ham()).toBe(false);
+    });
+  });
+}
+
+describe("bốn cờ E-learning độc lập NHAU", () => {
+  afterEach(() => {
+    for (const [khoa] of CO_ELEARNING) delete process.env[khoa];
+  });
+
+  it("bật một cờ không bật ba cờ kia", () => {
+    for (const [bat] of CO_ELEARNING) {
+      for (const [khoa] of CO_ELEARNING) delete process.env[khoa];
+      process.env[bat] = "true";
+      for (const [khoa, ham] of CO_ELEARNING) {
+        expect(ham(), `${bat} bật ⇒ ${khoa}`).toBe(khoa === bat);
+      }
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Lead Gateway (07/11/2026) — cổng máy nhận hồ sơ khách từ AI Agent. Mặc định TẮT; CHỈ đúng chuỗi "true" mới bật (dữ liệu khách không được mở bằng giá trị "gần đúng").
+// ─────────────────────────────────────────────────────────────────────────────
+const AIL_KEY = "AI_LEAD_GATEWAY_ENABLED";
+
+describe("isAiLeadGatewayEnabled", () => {
+  afterEach(() => {
+    delete process.env[AIL_KEY];
+  });
+
+  it("[AIL-FL-01] mặc định TẮT khi không khai env", () => {
+    delete process.env[AIL_KEY];
+    expect(isAiLeadGatewayEnabled()).toBe(false);
+  });
+
+  it('[AIL-FL-02] CHỈ đúng chuỗi "true" mới bật', () => {
+    process.env[AIL_KEY] = "true";
+    expect(isAiLeadGatewayEnabled()).toBe(true);
+  });
+
+  it('[AIL-FL-03] KHÔNG bật với "TRUE"/"True"/"1"/"yes"/"on"/" true "/rỗng/"false"', () => {
+    for (const v of ["TRUE", "True", "1", "yes", "on", " true ", "", "false"]) {
+      process.env[AIL_KEY] = v;
+      expect(isAiLeadGatewayEnabled(), `giá trị ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+
+  it("[AIL-FL-04] .env.example khai CẢ HAI biến, giá trị mẫu TẮT/rỗng (không lộ khoá, không bật sẵn)", () => {
+    expect(ENV_EXAMPLE).toMatch(/^AI_LEAD_GATEWAY_ENABLED="false"/m);
+    expect(ENV_EXAMPLE).toMatch(/^AI_LEAD_AGENT_MASTER_KEY=""/m);
+  });
+});

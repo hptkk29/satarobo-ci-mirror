@@ -1,0 +1,7 @@
+/* RIÊNG TRANG DANH SÁCH KHOÁ HỌC (Courses)
+   Chép từ artifact "Sata Robo — Website mới" (pages/*.dc.html, khối <style> trong <helmet>), giữ nguyên số liệu.
+   Chỉ thêm tiền tố phạm vi `:where(.page)` (độ ưu tiên 0 — selector giữ nguyên độ ưu tiên gốc) cho mọi selector (không rò sang portal/admin), đổi tên @keyframes thành `srp-*`
+   (tránh đụng keyframes của Tailwind) và gắn biến font next/font. KHÔNG dịch sang Tailwind. */
+
+
+@media (max-width:560px){:where(.page) .gift-band{grid-template-columns:1fr!important;gap:14px!important}:where(.page) .gift-band>img{width:104px!important}}

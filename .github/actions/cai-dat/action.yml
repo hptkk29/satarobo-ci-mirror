@@ -1,0 +1,42 @@
+name: Cài đặt môi trường CI gương
+description: >-
+  pnpm + Node 22 + cache store pnpm + pnpm install + prisma generate; tuỳ chọn Chromium cho
+  Playwright (cache ~/.cache/ms-playwright). Tệp gốc ở satarobo-vn: ci-guong/actions/cai-dat/.
+
+inputs:
+  playwright:
+    description: Cài Chromium + thư viện hệ thống cho Playwright
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v3
+      with: { version: 11 }
+    - uses: actions/setup-node@v4
+      with: { node-version: 22 }
+    - id: store
+      shell: bash
+      run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-${{ runner.os }}-
+    - shell: bash
+      run: pnpm install --frozen-lockfile
+    - shell: bash
+      run: pnpm exec prisma generate
+    # Trình duyệt: cache thư mục nhị phân theo lockfile (phiên bản Playwright nằm trong đó);
+    # thư viện hệ thống (apt) vẫn phải cài mỗi máy — máy GitHub xoá sau mỗi job.
+    - if: ${{ inputs.playwright == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: ms-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+    - if: ${{ inputs.playwright == 'true' }}
+      shell: bash
+      run: |
+        pnpm exec playwright install chromium
+        pnpm exec playwright install-deps chromium

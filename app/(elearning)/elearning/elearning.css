@@ -1,0 +1,218 @@
+/* Khu e-learning nội bộ (e-learning.satarobo.vn) — token thiết kế 17/11/2026, scope RIÊNG.
+ *
+ * Nguồn: docs/elearning/thiet-ke-lai-2611/design/tokens-va-thanh-phan.css (nền kem ấm, tím #620c8b; tối #161513).
+ * Quyết định: DECISIONS.md D-02 (Q2 scope riêng, Q3 tối chỉ trong `.elearning-root`).
+ *
+ * ⚠️ CHỈ KHAI BIẾN (custom property). KHÔNG đặt `background`/`color` ở đây: file này không nằm trong `@layer`, mà CSS
+ *   không-layer THẮNG mọi utility Tailwind (nằm trong `@layer utilities`) — đặt `background` ở đây là `bg-popover`,
+ *   `bg-card` của mọi thành phần con bị đè im lặng. Nền/chữ của khung đi qua class `bg-background text-foreground`.
+ *
+ * ⚠️ Vì sao hai bộ chọn: `.admin-scope` (app/globals.css, cuối file) ghi đè `--primary`/`--accent` với độ đặc hiệu 0,1,0.
+ *   `.admin-scope.elearning-root` (0,2,0) thắng độ đặc hiệu chứ không phụ thuộc thứ tự nạp tệp. `.elearning-root` đứng
+ *   riêng là để khung mới (P1) có thể bỏ `.admin-scope` mà token vẫn đúng.
+ *
+ * Sáng/Tối: `.dark` đặt TRÊN CHÍNH phần tử `.elearning-root` (không phải <html>) — tiền lệ teacher-theme.tsx. Nhờ
+ *   `@custom-variant dark (&:is(.dark *))` các `dark:` của phần tử CON vẫn ăn; điều hướng client sang /admin không dính
+ *   nền tối. Hộp nổi qua portal được gắn lại cả hai lớp bởi `useLopPhamViPortal` (components/ui/lop-pham-vi-portal.ts).
+ *
+ * Ngưỡng tương phản của mọi cặp chữ/nền ở đây được khoá bằng tests/elearning/theme-tuong-phan.test.ts — sửa màu thì
+ * chạy lại; đừng đổi một mã hex mà không đo.
+ */
+
+/* ── Sáng ─────────────────────────────────────────────────────────────────── */
+.elearning-root,
+.admin-scope.elearning-root {
+  color-scheme: light;
+
+  --background: #f6f4f0; /* --bg */
+  --foreground: #1f1b16; /* --text */
+
+  --card: #fffefc; /* --surface */
+  --card-foreground: #1f1b16;
+  --popover: #fffefc;
+  --popover-foreground: #1f1b16;
+
+  --secondary: #ebe6de; /* --raised */
+  --secondary-foreground: #1f1b16;
+  --muted: #ebe6de;
+  --muted-foreground: #6f665a; /* --muted (chữ phụ) */
+
+  --border: rgba(31, 27, 22, 0.09); /* --line */
+  --input: rgba(31, 27, 22, 0.16); /* --line2 */
+  --ring: #620c8b;
+
+  --primary: #620c8b; /* --btn-bg / --accent */
+  --primary-foreground: #ffffff; /* --btn-ink */
+  --primary-dark: #4e237d; /* --btn-hover */
+  --primary-darker: #3f1c66;
+  --primary-soft: rgba(98, 12, 139, 0.07); /* --accent-soft */
+  --primary-soft-hover: rgba(98, 12, 139, 0.12);
+  --primary-ink: #5a0b80; /* --link: chữ/biểu tượng màu thương hiệu */
+  --primary-ink-hover: #4e237d;
+
+  /* Thang trạng thái: thiết kế dùng --ok/--warn/--bad — chữ ĐÃ là bậc mực, nền là tint cùng sắc. */
+  --state-success: #1f7a4a;
+  --state-success-ink: #1f7a4a;
+  --state-success-ink-hover: #176339;
+  --state-success-soft: rgba(31, 122, 74, 0.09);
+  --state-success-soft-hover: rgba(31, 122, 74, 0.15);
+  --state-warning: #93560a;
+  --state-warning-ink: #93560a;
+  --state-warning-ink-hover: #794508;
+  --state-warning-soft: rgba(147, 86, 10, 0.09);
+  --state-warning-soft-hover: rgba(147, 86, 10, 0.15);
+  --state-danger: #bf321d;
+  --state-danger-ink: #bf321d;
+  --state-danger-ink-hover: #9f2815;
+  --state-danger-soft: rgba(191, 50, 29, 0.08);
+  --state-danger-soft-hover: rgba(191, 50, 29, 0.14);
+  /* "Thông tin": thiết kế không có sắc riêng — dùng tím thương hiệu để không vay mượn xanh dương ngoài bảng màu. */
+  --state-info: #5a0b80;
+  --state-info-ink: #5a0b80;
+  --state-info-ink-hover: #4e237d;
+  --state-info-soft: rgba(98, 12, 139, 0.07);
+  --state-info-soft-hover: rgba(98, 12, 139, 0.12);
+
+  /* Thanh tiến độ "dầm" (--beam / --hole / --fill) và bóng hộp thoại (--shadow). */
+  --el-beam: #ddd7cd;
+  --el-hole: #b4ab9d;
+  --el-fill: #620c8b;
+  --el-orange: #fe8f2d;
+  --el-raised: #ebe6de;
+  --el-text2: #544b40; /* --text2: chữ phụ đậm (nhãn thương hiệu, mục điều hướng) */
+  --el-side: #f0ede7;
+  --el-shadow: 0 8px 24px rgba(31, 27, 22, 0.08);
+}
+
+/* ── Tối ──────────────────────────────────────────────────────────────────── */
+.elearning-root.dark,
+.admin-scope.elearning-root.dark {
+  color-scheme: dark;
+
+  --background: #161513;
+  --foreground: #efe9de;
+
+  --card: #1c1a18;
+  --card-foreground: #efe9de;
+  --popover: #1c1a18;
+  --popover-foreground: #efe9de;
+
+  --secondary: #272421;
+  --secondary-foreground: #efe9de;
+  --muted: #272421;
+  --muted-foreground: #958d81;
+
+  --border: rgba(239, 233, 222, 0.09);
+  --input: rgba(239, 233, 222, 0.16);
+  --ring: #d2a8f0;
+
+  /* Thiết kế tối: nút chính là KEM trên chữ đen; tím sáng #d2a8f0 chỉ dùng làm liên kết / tô tiến độ. */
+  --primary: #efe9de;
+  --primary-foreground: #161513;
+  --primary-dark: #ffffff;
+  --primary-darker: #ffffff;
+  --primary-soft: rgba(210, 168, 240, 0.1);
+  --primary-soft-hover: rgba(210, 168, 240, 0.18);
+  --primary-ink: #d6b2f2;
+  --primary-ink-hover: #e6cdf8;
+
+  --state-success: #5cc792;
+  --state-success-ink: #5cc792;
+  --state-success-ink-hover: #86d9ae;
+  --state-success-soft: rgba(92, 199, 146, 0.14);
+  --state-success-soft-hover: rgba(92, 199, 146, 0.22);
+  --state-warning: #e3a95a;
+  --state-warning-ink: #e3a95a;
+  --state-warning-ink-hover: #ecc088;
+  --state-warning-soft: rgba(227, 169, 90, 0.14);
+  --state-warning-soft-hover: rgba(227, 169, 90, 0.22);
+  --state-danger: #f07a68;
+  --state-danger-ink: #f07a68;
+  --state-danger-ink-hover: #f49e90;
+  --state-danger-soft: rgba(240, 122, 104, 0.14);
+  --state-danger-soft-hover: rgba(240, 122, 104, 0.22);
+  --state-info: #d6b2f2;
+  --state-info-ink: #d6b2f2;
+  --state-info-ink-hover: #e6cdf8;
+  --state-info-soft: rgba(210, 168, 240, 0.1);
+  --state-info-soft-hover: rgba(210, 168, 240, 0.18);
+
+  --el-beam: #2f2b27;
+  --el-hole: #4b4640;
+  --el-fill: #d2a8f0;
+  --el-orange: #fe8f2d;
+  --el-raised: #272421;
+  --el-text2: #b3ab9f;
+  --el-side: #121110;
+  --el-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* ── Tối theo hệ thống, KHÔNG cần JS ──────────────────────────────────────────
+ * Vì sao có khối này: chế độ "Hệ thống" chỉ biết hệ điều hành đang tối SAU khi React mount (SSR luôn ra bản sáng để khỏi lệch
+ * hydrate), nên người dùng máy tối thấy nền sáng nháy lên rồi mới đổi. CSS thì biết ngay từ khung hình đầu. Chỉ áp khi gốc
+ * đang ở lựa chọn "system" (`data-tuy-chon`); chọn Sáng/Tối tay thì khối này không đụng tới.
+ * ⚠️ Nội dung PHẢI GIỐNG HỆT khối `.dark` ngay trên — tests/elearning/theme-tuong-phan.test.ts [EL-THEME-06] so từng token.
+ */
+@media (prefers-color-scheme: dark) {
+  .elearning-root[data-tuy-chon="system"],
+  .admin-scope.elearning-root[data-tuy-chon="system"] {
+    color-scheme: dark;
+
+    --background: #161513;
+    --foreground: #efe9de;
+
+    --card: #1c1a18;
+    --card-foreground: #efe9de;
+    --popover: #1c1a18;
+    --popover-foreground: #efe9de;
+
+    --secondary: #272421;
+    --secondary-foreground: #efe9de;
+    --muted: #272421;
+    --muted-foreground: #958d81;
+
+    --border: rgba(239, 233, 222, 0.09);
+    --input: rgba(239, 233, 222, 0.16);
+    --ring: #d2a8f0;
+
+    /* Thiết kế tối: nút chính là KEM trên chữ đen; tím sáng #d2a8f0 chỉ dùng làm liên kết / tô tiến độ. */
+    --primary: #efe9de;
+    --primary-foreground: #161513;
+    --primary-dark: #ffffff;
+    --primary-darker: #ffffff;
+    --primary-soft: rgba(210, 168, 240, 0.1);
+    --primary-soft-hover: rgba(210, 168, 240, 0.18);
+    --primary-ink: #d6b2f2;
+    --primary-ink-hover: #e6cdf8;
+
+    --state-success: #5cc792;
+    --state-success-ink: #5cc792;
+    --state-success-ink-hover: #86d9ae;
+    --state-success-soft: rgba(92, 199, 146, 0.14);
+    --state-success-soft-hover: rgba(92, 199, 146, 0.22);
+    --state-warning: #e3a95a;
+    --state-warning-ink: #e3a95a;
+    --state-warning-ink-hover: #ecc088;
+    --state-warning-soft: rgba(227, 169, 90, 0.14);
+    --state-warning-soft-hover: rgba(227, 169, 90, 0.22);
+    --state-danger: #f07a68;
+    --state-danger-ink: #f07a68;
+    --state-danger-ink-hover: #f49e90;
+    --state-danger-soft: rgba(240, 122, 104, 0.14);
+    --state-danger-soft-hover: rgba(240, 122, 104, 0.22);
+    --state-info: #d6b2f2;
+    --state-info-ink: #d6b2f2;
+    --state-info-ink-hover: #e6cdf8;
+    --state-info-soft: rgba(210, 168, 240, 0.1);
+    --state-info-soft-hover: rgba(210, 168, 240, 0.18);
+
+    --el-beam: #2f2b27;
+    --el-hole: #4b4640;
+    --el-fill: #d2a8f0;
+    --el-orange: #fe8f2d;
+    --el-raised: #272421;
+    --el-text2: #b3ab9f;
+    --el-side: #121110;
+    --el-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+}

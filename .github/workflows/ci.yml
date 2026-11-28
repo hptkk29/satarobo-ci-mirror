@@ -1,0 +1,505 @@
+name: CI gương
+
+# ══ CI CỦA REPO GƯƠNG PUBLIC (hptkk29/satarobo-ci-mirror) ══════════════════════════════
+#
+# Tệp gốc nằm ở satarobo-vn (PRIVATE) tại `ci-guong/ci.yml`; `scripts/ci/xuat-ban-guong.sh` chép
+# nó vào ảnh chụp thành `.github/workflows/ci.yml` (và `ci-guong/actions/*` thành
+# `.github/actions/*`). SỬA Ở satarobo-vn, đừng sửa ở gương — mỗi lần đẩy là ghi đè.
+#
+# Luồng: PR ở satarobo-vn ⇒ `dong-bo-guong.yml` xuất ảnh chụp đã lọc ⇒ commit MỒ CÔI trên nhánh
+# `pr-<số>` ở đây ⇒ CI này ⇒ job cuối ghi commit status "ci-guong" về SHA gốc.
+#
+# ⚠️ AN TOÀN: trigger DUY NHẤT là `push` lên `pr-*` (KHÔNG `pull_request` / `pull_request_target`
+# — người lạ fork rồi mở PR không chạy được gì, không chạm `STATUS_TOKEN`). Chỉ máy GitHub `ubuntu-24.04`.
+#
+# ⚠️ GHIM `ubuntu-24.04`, KHÔNG dùng `ubuntu-latest` [12/11/2026]: nhãn `-latest` trượt sang Ubuntu 26.04 và
+# Playwright (`playwright install-deps chromium`) chết ngay bước cài với "Playwright does not support chromium on
+# ubuntu26.04-x64" ⇒ MỌI job E2E đỏ (R7 · A0 · RBAC v2) dù mã không đổi một chữ; job tsc/unit/build vẫn xanh nên trông như
+# "lỗi mã". Lưới `[CGR-04]` (scripts/ci/ci-guong-ma-thoat.test.ts) đỏ nếu có job quay về `-latest`. Nâng lên 26.04 khi
+# bản Playwright trong pnpm-lock.yaml hỗ trợ nó — đổi MỘT lượt cho cả chín job, đừng nâng lẻ.
+# Không secret prod; NEXTAUTH_SECRET là chuỗi TEST; secret duy nhất `STATUS_TOKEN` (chỉ quyền ghi
+# commit status lên satarobo-vn), dùng ở job cuối.
+#
+# ══ CHIA 15 JOB LÀM VIỆC [10/10/2026; tách bộ DB 25/11/2026; tách e2e e-learning 27/11/2026] ══
+# Tài khoản Free: tối đa 20 job đồng thời. Một lượt = 15 job làm việc (+ a0-rbac-v2 không bắt buộc = 16): MỘT PR chạy thẳng không chờ;
+# hai PR đẩy cùng lúc thì job thừa XẾP HÀNG (chậm hơn một chút, không đỏ). Thời gian của MỘT lượt ≈ build (≈ 3–4 phút) cộng job e2e lâu nhất, và job
+# lâu nhất ĐỔI theo máy: `E2E A0 1/2 + smoke` đo 17–24 phút (7 lượt, 26–27/11); e2e e-learning 1/2 ≈ 20 phút máy nhanh (đo 1 lượt), ≈ 27 phút máy chậm
+# (ƯỚC từ log trước khi tách). Job "Báo trạng thái" chạy SAU khi các job kia xong.
+#   build ─┬► a0 (1/2 + smoke) ──────┐
+#          ├► a0 (2/2 + site GV)     │
+#          └► e2e-elearning 1/2 · 2/2│
+#   unit 1/3 · 2/3 · 3/3             ├► bao-trang-thai
+#   quality (tsc ‖ eslint ‖ depcruise) · db-hoa-hong · db-tien · db-khac
+#   r7 1/3 + CRM · r7 2/3 + R1 · r7 3/3 + FL ┘
+# Cache: store pnpm · ms-playwright · .next/cache · tsbuildinfo · cache eslint (key lockfile + hash
+# nguồn, restore-keys theo lockfile). Mỗi job một máy + một Postgres riêng ⇒ cổng 5432 cố định.
+# Env từng bộ giữ NGUYÊN như `ci.yml` private — lý do từng biến nằm ở đó.
+# Thêm bộ test vào `ci.yml` thì PHẢI thêm ở đây — lưới `[CIG-*]` (ci-rieng) đỏ nếu quên.
+
+on:
+  push:
+    branches: ["pr-*"]
+
+concurrency:
+  group: ci-guong-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NEXTAUTH_SECRET: "ci-build-only-secret-do-not-use-in-prod-32chars"
+  DB: postgresql://ci:ci@localhost:5432
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('app/**', 'components/**', 'lib/**', 'content/**', 'public/**', 'next.config.ts', 'proxy.ts') }}
+          restore-keys: next-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+      - name: Migrate DB schema (ISR công khai tra DB lúc build)
+        run: pnpm exec prisma migrate deploy
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" }
+      - name: Build
+        run: pnpm build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=6144"
+          # Bỏ pass TypeScript trong `next build` — job quality đã phủ (next.config.ts).
+          CI_BO_TS_TRONG_BUILD: "1"
+          DATABASE_URL: "${{ env.DB }}/ci_test"
+          DIRECT_URL: "${{ env.DB }}/ci_test"
+          NEXTAUTH_URL: "http://localhost:3000"
+          NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+      - name: Canary — không secret nào lọt bundle client
+        run: node scripts/canary-client-bundle-keys.mjs
+      # tar GIỮ symlink trong `.next/node_modules`; mọi job trên máy GitHub cùng đường workspace.
+      - name: Đóng gói bản build
+        run: tar --exclude=.next/cache --exclude=.next/standalone -cf next-build.tar .next
+      - uses: actions/upload-artifact@v4
+        with: { name: next-build, path: next-build.tar, retention-days: 1 }
+
+  unit:
+    name: Unit tests (Vitest) ${{ matrix.shard }}/3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      # DATABASE_URL trỏ cổng KHÔNG AI NGHE — ca thuần lỡ chạm DB phải ĐỎ. Test đọc thứ không có ở
+      # gương đã bị loại khỏi ảnh chụp và chạy ở `ci-rieng.yml` (scripts/ci/test-chi-rieng.txt).
+      - name: Unit tests (Vitest)
+        run: pnpm exec vitest run --reporter=verbose --shard=${{ matrix.shard }}/3
+        env:
+          DATABASE_URL: postgresql://x:x@127.0.0.1:59999/khong_ton_tai
+          DIRECT_URL: postgresql://x:x@127.0.0.1:59999/khong_ton_tai
+
+  quality:
+    name: Typecheck ‖ Lint ‖ Boundaries
+    runs-on: ubuntu-24.04
+    # TÁCH 25/11/2026: trước đây job này gồm cả ~10 bộ Vitest DB chạy NỐI ĐUÔI trên một database (đo 36,8 phút; mọi job khác ≤ 17 phút).
+    # Giờ chỉ còn ba việc tĩnh — không cần Postgres. Các bộ DB nằm ở db-hoa-hong · db-tien · db-khac (mỗi job một máy + một Postgres riêng).
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: quality-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('app/**', 'components/**', 'lib/**', 'scripts/**', 'tests/**', 'pos-agent-extension/**', 'tsconfig.json', 'eslint.config.mjs') }}
+          restore-keys: quality-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+      # Ba việc ĐỘC LẬP chạy SONG SONG trong một máy (4 vCPU). Log từng việc in riêng một nhóm;
+      # việc nào đỏ thì bước đỏ. tsc `--incremental` + eslint `--cache` ăn cache `.cache/` ở trên.
+      - name: Typecheck ‖ Lint ‖ Boundaries
+        env:
+          # 10240 (25/11/2026): nhánh e-learning Online — tsc chạm trần 8192 (OOM 134 ở 8021 MB, run gương 45600143864) ⇒ nâng; runner 16 GB vẫn vừa tsc+eslint+boundaries.
+          # 8192 (13/10/2026): đo tsc --noEmit --incremental false — origin/test 6,40 GB, PR #728 6,58 GB ⇒ vượt trần 6144 MB,
+          # tsc OOM (mã 134) dù mọi bộ test xanh. Runner ubuntu-24.04 có 16 GB; tsc + eslint + boundaries chạy song song vẫn vừa.
+          NODE_OPTIONS: --max-old-space-size=10240
+        run: |
+          mkdir -p .cache/tsc .cache/eslint "$RUNNER_TEMP/q"
+          # ⚠️ `run:` chạy `bash -e` và `( … )` THỪA HƯỞNG -e: khi tsc/eslint đỏ (mã thoát ≠ 0) subshell THOÁT NGAY, `echo $?` không chạy ⇒ không có tệp .rc ⇒
+          # `cat` ở vòng dưới nổ (`typecheck.rc: No such file`) TRƯỚC khi in log ⇒ lỗi thật bị che bằng một thông báo vô nghĩa (12/10/2026: che một lỗi TS thật
+          # qua nhiều PR, bị đọc nhầm thành "job crash / hết bộ nhớ"). `set +e` trong từng subshell để mã thoát LUÔN được ghi; vòng đọc chịu thiếu .rc và vẫn in log.
+          ( set +e; node --max-old-space-size=10240 node_modules/typescript/bin/tsc --noEmit --incremental \
+              --tsBuildInfoFile .cache/tsc/tsbuildinfo > "$RUNNER_TEMP/q/typecheck.log" 2>&1; echo $? > "$RUNNER_TEMP/q/typecheck.rc" ) &
+          ( set +e; pnpm lint --cache --cache-location .cache/eslint/ > "$RUNNER_TEMP/q/lint.log" 2>&1; echo $? > "$RUNNER_TEMP/q/lint.rc" ) &
+          ( set +e; pnpm lint:boundaries > "$RUNNER_TEMP/q/boundaries.log" 2>&1; echo $? > "$RUNNER_TEMP/q/boundaries.rc" ) &
+          wait
+          LOI=0
+          for v in typecheck lint boundaries; do
+            rc=$(cat "$RUNNER_TEMP/q/$v.rc" 2>/dev/null || echo "KHONG-GHI-DUOC-MA-THOAT")
+            echo "::group::$v (mã thoát $rc)"; cat "$RUNNER_TEMP/q/$v.log" 2>/dev/null || true; echo "::endgroup::"
+            [ "$rc" = "0" ] || { echo "::error::$v đỏ (mã thoát $rc)"; LOI=1; }
+          done
+          exit $LOI
+
+  db-hoa-hong:
+    name: Vitest DB · hoa hồng
+    runs-on: ubuntu-24.04
+    # Bộ nặng nhất (đo 12 phút, có lần ≈ 16 phút trên runner chậm) đứng MỘT MÌNH một job. Thêm bộ hoa hồng mới thì vào đây.
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - name: Migrate + seed quyền (RBAC v2 đọc quyền từ DỮ LIỆU)
+        if: ${{ !cancelled() }}
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed-roles.ts
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" }
+      - { name: Run hoa hồng DB tests, if: "${{ !cancelled() }}", run: pnpm test:hoa-hong-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+
+  db-tien:
+    name: Vitest DB · tiền (finance + khuyến mãi)
+    runs-on: ubuntu-24.04
+    # finance DB ≈ 8,5 phút + khuyến mãi. Chạm lib/finance · lib/payments thì R7 vẫn là cổng riêng (r7).
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - name: Migrate + seed quyền (RBAC v2 đọc quyền từ DỮ LIỆU)
+        if: ${{ !cancelled() }}
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed-roles.ts
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" }
+      - { name: Run finance DB tests, if: "${{ !cancelled() }}", run: pnpm test:finance-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run khuyến mãi DB tests, if: "${{ !cancelled() }}", run: pnpm test:khuyen-mai-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      # BẮT BUỘC [M8 P1 mục 8, 28/11/2026]: quyền giao hàng, huỷ đơn, quyền hoàn tiền + thao tác tiền trên đơn Online (VHQ · VH · VHT · DUA · HTQ · TTO · MDS) trên Postgres THẬT. Các spec này tự `describe.skipIf`
+      # nên ở job unit (DB cổng chết) chúng SKIP — trước bước này không job nào chạy chúng. Reporter `bao-cao-spec-bat-buoc` làm bước ĐỎ khi một tệp
+      # trong danh sách vắng mặt hoặc MỘT ca bị skip/todo. DB riêng để không ăn trạng thái do bộ tiền/khuyến mãi để lại. Lưới `[CI-DB-07]`/`[CI-DB-08]`.
+      - name: Database riêng cho spec bắt buộc (giao hàng · huỷ đơn · hoàn tiền)
+        if: ${{ !cancelled() }}
+        run: |
+          PGPASSWORD=ci createdb -h localhost -U ci ci_test_giao_huy
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed-roles.ts
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_giao_huy", DIRECT_URL: "${{ env.DB }}/ci_test_giao_huy" }
+      - { name: Run quyền giao hàng · huỷ đơn · hoàn tiền Online (bắt buộc — không được skip), if: "${{ !cancelled() }}", run: pnpm test:online-bat-buoc-db --reporter=./tests/_helpers/bao-cao-spec-bat-buoc.ts, env: { DATABASE_URL: "${{ env.DB }}/ci_test_giao_huy", DIRECT_URL: "${{ env.DB }}/ci_test_giao_huy" } }
+
+  db-khac:
+    name: Vitest DB · các bộ còn lại
+    runs-on: ubuntu-24.04
+    # chat · nền hệ thống · đào tạo · lead-intake · inbox · chấm công · DISC · AI Lead (+HTTP) · học bù. Thêm bộ DB MỚI vào job này
+    # trừ khi nó nặng (> 8 phút) — khi đó cho job riêng như db-hoa-hong.
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+      - name: Migrate + seed quyền (RBAC v2 đọc quyền từ DỮ LIỆU)
+        if: ${{ !cancelled() }}
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed-roles.ts
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" }
+      - { name: Run chat DB tests, if: "${{ !cancelled() }}", run: pnpm test:chat-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run nền-hệ-thống DB tests, if: "${{ !cancelled() }}", run: pnpm test:nen-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      # E-learning (PR tổng #921): bộ DB đào tạo nội bộ trước đây "chưa từng nằm trong CI" — gồm cả ca cách ly cơ sở trên
+      # Postgres thật (tests/elearning/cach-ly-co-so.spec.ts). Không có dòng này thì spec đó SKIP ở CI và trông như xanh.
+      - { name: Run đào-tạo-nội-bộ DB tests, if: "${{ !cancelled() }}", run: pnpm test:elearning-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run lead-intake DB tests, if: "${{ !cancelled() }}", run: pnpm test:lead-intake, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run inbox DB tests, if: "${{ !cancelled() }}", run: pnpm test:inbox-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      - { name: Run chấm-công DB tests, if: "${{ !cancelled() }}", run: pnpm test:cham-cong-db --reporter=./tests/_helpers/bao-cao-db-bat-buoc.ts, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      # DISC × SataRobo — lõi lưu/nhận/CRM/IDOR trên Postgres THẬT (idempotent đua, claimAttempts nguyên tử, không dữ liệu trẻ lọt Lead).
+      - { name: Run DISC DB tests, if: "${{ !cancelled() }}", run: pnpm test:disc-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      # AI Lead Gateway (lát G): idempotency song song / nonce / một hồ sơ mở trên Postgres thật. Không có dòng này thì spec SKIP ở CI và trông như xanh.
+      - { name: Run AI Lead Gateway DB tests, if: "${{ !cancelled() && hashFiles('tests/ai-lead/**') != '' }}", run: pnpm test:ai-lead-db, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+      # AI Lead Gateway — provider contract QUA HTTP THẬT: tạo DB nháp `satarobo_test_ailead_http_<pid>` (rồi xoá), dựng `next dev`, phát lại mọi fixture + ca chỉ-HTTP ký bằng bộ ký độc lập. Chứng minh matcher proxy, byte thân thật, 304, 405 mà gọi handler trong tiến trình không chứng minh được.
+      - { name: Run AI Lead provider contract qua HTTP thật, if: "${{ !cancelled() && hashFiles('scripts/ai-lead/**') != '' }}", run: pnpm test:ai-lead-http, env: { ADMIN_DB_URL: "${{ env.DB }}/postgres", AI_LEAD_HTTP_MODE: dev } }
+      # Chỉ khi nhánh CÓ module học bù (`tests/hoc-bu/`): `main` chưa có (#549 mới ở `test`), nên script
+      # `test:hoc-bu-db` không tồn tại ở đó và PR vào `main` đỏ ở "Missing script". Gác theo thư mục để
+      # MỘT tệp này dùng chung cho cả hai nhánh — hai bản khác nhau là xung đột ở mỗi lượt test → main.
+      - { name: Run học bù (toàn vẹn) DB tests, if: "${{ !cancelled() && hashFiles('tests/hoc-bu/**') != '' }}", run: pnpm test:hoc-bu-db --reporter=./tests/_helpers/bao-cao-db-bat-buoc.ts, env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test" } }
+
+  r7:
+    name: E2E R7 ${{ matrix.shard }}/3 + ${{ matrix.kem }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, kem: CRM }
+          - { shard: 2, kem: R1 }
+          - { shard: 3, kem: FL }
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      NEXTAUTH_URL: "http://localhost:3100"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3100"
+      BASE_URL: "http://localhost:3100"
+      R7_SKIP_WEBSERVER: "1"
+      CRM_SKIP_WEBSERVER: "1"
+      R1_SKIP_WEBSERVER: "1"
+      FL_SKIP_WEBSERVER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+        with: { playwright: "true" }
+      # Mỗi bộ một database (resetDb của bộ này không xoá dữ liệu bộ kia). Tên chứa `ci_test`.
+      - name: Tạo database riêng
+        run: PGPASSWORD=ci createdb -h localhost -U ci ci_test_kem
+      # Gọi THẲNG playwright: `pnpm test:e2e:r7 -- --shard=…` làm `--shard` thành bộ lọc tên tệp.
+      - name: Run Phase R7 e2e ${{ matrix.shard }}/3
+        run: pnpm exec playwright test -c playwright.r7.config.ts --shard=${{ matrix.shard }}/3
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test", DIRECT_URL: "${{ env.DB }}/ci_test", PLAYWRIGHT_HTML_OUTPUT_DIR: "bao-cao-ci/r7-${{ matrix.shard }}" }
+      - name: Run Phase CRM e2e
+        if: ${{ !cancelled() && matrix.kem == 'CRM' }}
+        run: pnpm test:e2e:crm
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_kem", DIRECT_URL: "${{ env.DB }}/ci_test_kem", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/crm }
+      # ⚠️ Cố ý bỏ spec cần trình duyệt `crm-ui.spec.ts` (describe "CRM UI") — như ci.yml private.
+      - name: Run Phase R1 e2e (bỏ qua spec cần trình duyệt)
+        if: ${{ !cancelled() && matrix.kem == 'R1' }}
+        run: pnpm exec playwright test -c playwright.r1.config.ts --grep-invert "CRM UI"
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_kem", DIRECT_URL: "${{ env.DB }}/ci_test_kem", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/r1 }
+      - name: Run Phase FL e2e
+        if: ${{ !cancelled() && matrix.kem == 'FL' }}
+        run: pnpm test:e2e:fl
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_kem", DIRECT_URL: "${{ env.DB }}/ci_test_kem", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/fl }
+      - if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: "bao-cao-r7-${{ matrix.shard }}", path: bao-cao-ci/, retention-days: 7 }
+
+  a0:
+    name: E2E A0 ${{ matrix.shard }}/2 + ${{ matrix.kem }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, kem: smoke }
+          - { shard: 2, kem: "site GV" }
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      # `lib/auth.ts:132` chặn 5 lượt/phút theo ĐỊNH DANH, bộ đếm trong bộ nhớ server ⇒ bộ e2e
+      # đăng nhập lại nhiều lần bằng vài tài khoản sẽ treo ở /login. Lý do đầy đủ ở ci.yml private.
+      LOGIN_RATELIMIT_DISABLED: "1"
+      DEBUG: pw:webserver
+      E2E_PORT: "3100"
+      PORT: "3100"
+      TEACHER_E2E_PORT: "3100"
+      BASE_URL: "http://localhost:3100"
+      NEXTAUTH_URL: "http://localhost:3100"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3100"
+      AUTH_URL: "http://localhost:3100"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+        with: { playwright: "true" }
+      - uses: actions/download-artifact@v4
+        with: { name: next-build }
+      - name: Giải nén bản build
+        run: tar -xf next-build.tar && rm next-build.tar
+      - name: Tạo database riêng cho từng bộ
+        run: for d in ci_test_a0 ci_test_smoke ci_test_gv; do PGPASSWORD=ci createdb -h localhost -U ci "$d"; done
+      - name: Run Phase A0 e2e ${{ matrix.shard }}/2
+        run: bash scripts/ci/cho-canh.sh 12 pnpm exec playwright test -c playwright.a0.config.ts --shard=${{ matrix.shard }}/2
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_a0", DIRECT_URL: "${{ env.DB }}/ci_test_a0", PLAYWRIGHT_HTML_OUTPUT_DIR: "bao-cao-ci/a0-${{ matrix.shard }}" }
+      - name: Migrate + seed DB cho smoke
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm db:seed
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_smoke", DIRECT_URL: "${{ env.DB }}/ci_test_smoke" }
+      # Chỉ `chromium-desktop`: 13 ca không ca nào kiểm riêng di động (như ci.yml private).
+      - name: Run Playwright smoke tests
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: bash scripts/ci/cho-canh.sh 12 pnpm exec playwright test --project=chromium-desktop
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_smoke", DIRECT_URL: "${{ env.DB }}/ci_test_smoke", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/smoke }
+      - name: Run teacher-site browser e2e
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        run: bash scripts/ci/cho-canh.sh 16 pnpm test:e2e:teacher
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_gv", DIRECT_URL: "${{ env.DB }}/ci_test_gv", PLAYWRIGHT_HTML_OUTPUT_DIR: bao-cao-ci/site-gv }
+      - if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: "bao-cao-a0-${{ matrix.shard }}", path: bao-cao-ci/, retention-days: 7 }
+
+  # ══ E2E E-LEARNING (EL-07) — JOB RIÊNG, CHIA 2 SHARD [27/11/2026] ═════════════════════
+  # Trước đây là bước CUỐI của job a0 2/2. Từ khi bộ này lên 585 ca (25/11) nó KHÔNG treo mà VƯỢT NGÂN SÁCH 45 phút của job: đo trên gương, máy nhanh
+  # chạy bộ e-learning ≈ 26 phút (cả job ≈ 35); máy chậm (A0 6,4–6,7 phút thay vì 3,7) mới tới ca ≈ 430/585 sau ≈ 31,5 phút, cộng ≈ 13,5 phút đứng
+  # trước (cài đặt + A0 + site GV) là chạm 45 ⇒ bị huỷ khi vẫn đang in ca (runs 45870950522, 45837667493, 45818282011).
+  # Chia 2 (Playwright chia theo tệp, mỗi shard một database mới; mỗi tệp spec tự dựng dữ liệu ở beforeAll). Đo trên máy chậm: phần việc của
+  # shard 1 mất ≈ 25 phút (job ≈ 27); shard 2 ước ≈ 13 phút (job ≈ 15). Bộ phình thêm tới mức sát trần thì TĂNG SỐ SHARD (sửa cả `matrix.shard` lẫn
+  # mẫu số `--shard=…/N` — lưới `[CGR-06]`), đừng nâng `timeout-minutes`. Gọi THẲNG playwright (`pnpm … -- --shard` biến `--shard` thành bộ lọc tệp).
+  e2e-elearning:
+    name: E2E e-learning (EL-07) ${{ matrix.shard }}/2
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      # Như job a0: chặn đăng nhập 5 lượt/phút theo định danh làm bộ e2e treo ở /login.
+      LOGIN_RATELIMIT_DISABLED: "1"
+      DEBUG: pw:webserver
+      E2E_PORT: "3100"
+      PORT: "3100"
+      ELEARNING_E2E_PORT: "3100"
+      BASE_URL: "http://localhost:3100"
+      NEXTAUTH_URL: "http://localhost:3100"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3100"
+      AUTH_URL: "http://localhost:3100"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+        with: { playwright: "true" }
+      - uses: actions/download-artifact@v4
+        with: { name: next-build }
+      - name: Giải nén bản build
+        run: tar -xf next-build.tar && rm next-build.tar
+      - name: Tạo database riêng
+        run: PGPASSWORD=ci createdb -h localhost -U ci ci_test_el
+      # Chó canh 35 phút: trên mức chạy lành chậm nhất đã đo (≈ 25 phút) và dưới trần job, nên chỉ kêu khi thật sự bất thường.
+      - name: Run e-learning browser e2e ${{ matrix.shard }}/2
+        run: bash scripts/ci/cho-canh.sh 35 pnpm exec playwright test -c playwright.elearning.config.ts --shard=${{ matrix.shard }}/2
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_el", DIRECT_URL: "${{ env.DB }}/ci_test_el", PLAYWRIGHT_HTML_OUTPUT_DIR: "bao-cao-ci/el-07-${{ matrix.shard }}" }
+      - if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: "bao-cao-el-07-${{ matrix.shard }}", path: bao-cao-ci/, retention-days: 7 }
+
+  # ══ A0 CHẠY RBAC v2 (NHƯ PROD) — chốt lượt 2 điểm 3, 27/10/2026 ══════════════════════════
+  # Ca GHI của màn Phân công gộp skip ở RBAC v1 (công tắc Parttime fail-closed ở v1). Job này chạy chúng với
+  # `RBAC_V2_ENABLED=true`. CỐ Ý KHÔNG nằm trong `needs` của `bao-trang-thai` ⇒ KHÔNG góp vào status bắt buộc
+  # "ci-guong": nó ghi status RIÊNG "a0-rbac-v2" (job `bao-a0-rbac-v2`). Đưa vào required check là việc của chủ
+  # dự án sau 3 lượt xanh liên tiếp (docs/phan-cong-gop/BAO-CAO-SANG.md) — đừng tự thêm vào `needs` ở trên.
+  a0-rbac-v2:
+    name: E2E A0 RBAC v2 (Phân công gộp)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      LOGIN_RATELIMIT_DISABLED: "1"
+      E2E_PORT: "3100"
+      PORT: "3100"
+      BASE_URL: "http://localhost:3100"
+      NEXTAUTH_URL: "http://localhost:3100"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3100"
+      AUTH_URL: "http://localhost:3100"
+      RBAC_V2_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cai-dat
+        with: { playwright: "true" }
+      - uses: actions/download-artifact@v4
+        with: { name: next-build }
+      - name: Giải nén bản build
+        run: tar -xf next-build.tar && rm next-build.tar
+      - name: Tạo database riêng
+        run: PGPASSWORD=ci createdb -h localhost -U ci ci_test_a0v2
+      - name: Run A0 Phân công gộp (RBAC v2)
+        run: bash scripts/ci/cho-canh.sh 12 pnpm exec playwright test -c playwright.a0.config.ts tests/e2e/a0/phan-cong-gop.spec.ts --reporter=line,json
+        env: { DATABASE_URL: "${{ env.DB }}/ci_test_a0v2", DIRECT_URL: "${{ env.DB }}/ci_test_a0v2", PLAYWRIGHT_JSON_OUTPUT_NAME: bao-cao-ci/a0-v2.json }
+      # Ca GHI phải THẬT chạy: cờ v2 không tới máy chủ ⇒ cả bộ skip ⇒ job xanh mà không kiểm gì. Đòi 0 skip và > 0 ca đạt.
+      - name: Không ca nào skip ở v2
+        run: node -e "const s=require('./bao-cao-ci/a0-v2.json').stats;console.log(s);if(s.skipped!==0||s.expected===0)process.exit(1)"
+      - if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: bao-cao-a0-v2, path: bao-cao-ci/, retention-days: 7 }
+
+  bao-a0-rbac-v2:
+    name: Báo trạng thái a0-rbac-v2 (không bắt buộc)
+    needs: [a0-rbac-v2]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Ghi commit status "a0-rbac-v2" lên SHA gốc
+        env:
+          GH_TOKEN: ${{ secrets.STATUS_TOKEN }}
+          MSG: ${{ github.event.head_commit.message }}
+          KET_QUA: ${{ needs.a0-rbac-v2.result == 'success' && 'success' || (needs.a0-rbac-v2.result == 'failure' && 'failure' || 'error') }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA=$(printf '%s' "$MSG" | grep -oE '[0-9a-f]{40}' | head -1)
+          [ -n "$SHA" ] || { echo "::error::Không đọc được SHA gốc từ commit message"; exit 1; }
+          case "$KET_QUA" in success) MO="A0 RBAC v2 xanh";; failure) MO="A0 RBAC v2 đỏ";; *) MO="Bị huỷ / bỏ qua";; esac
+          gh api -X POST "repos/hptkk29/satarobo-vn/statuses/$SHA"             -f state="$KET_QUA" -f context="a0-rbac-v2" -f target_url="$URL" -f description="$MO"
+
+  bao-trang-thai:
+    name: Báo trạng thái về satarobo-vn
+    needs: [build, unit, quality, db-hoa-hong, db-tien, db-khac, r7, a0, e2e-elearning]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # SHA gốc nằm trong commit message do `dong-bo-guong.yml` viết: "PR #<số> · <sha 40 ký tự>".
+      - name: Ghi commit status "ci-guong" lên SHA gốc
+        env:
+          GH_TOKEN: ${{ secrets.STATUS_TOKEN }}
+          MSG: ${{ github.event.head_commit.message }}
+          KET_QUA: ${{ contains(needs.*.result, 'failure') && 'failure' || (contains(needs.*.result, 'cancelled') && 'error' || 'success') }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA=$(printf '%s' "$MSG" | grep -oE '[0-9a-f]{40}' | head -1)
+          [ -n "$SHA" ] || { echo "::error::Không đọc được SHA gốc từ commit message"; exit 1; }
+          case "$KET_QUA" in success) MO="Mọi bộ xanh";; failure) MO="Có bộ đỏ";; *) MO="Bị huỷ";; esac
+          gh api -X POST "repos/hptkk29/satarobo-vn/statuses/$SHA" \
+            -f state="$KET_QUA" -f context="ci-guong" -f target_url="$URL" -f description="$MO"
